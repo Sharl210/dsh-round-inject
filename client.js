@@ -24,8 +24,22 @@ window.__ModuleLoader__.load({
 
     const NAMESPACE = 'round-inject'
 
-    /** Schema defaults mirroring the Host Config, shown before first load. */
+    /**
+     * Schema defaults mirroring the Host Config, shown before first load.
+     * `lastInjectStep` is a durable host-side bookmark (never rendered); the
+     * UI draft deliberately excludes it so host bookmark updates do not
+     * reset the form while the user is editing.
+     */
     const DEFAULTS = Object.freeze({ enabled: true, interval: 80, prompt: '', injectOnStart: true })
+
+    /** Pick the UI-editable fields out of a settings snapshot. */
+    const uiValue = (snapshotValue) => {
+      const out = {}
+      for (const key of Object.keys(DEFAULTS)) {
+        if (key in snapshotValue) out[key] = snapshotValue[key]
+      }
+      return out
+    }
 
     const rowStyle = {
       display: 'flex',
@@ -84,12 +98,12 @@ window.__ModuleLoader__.load({
        * intermediate text never reaches the settings, and the final committed
        * value is written once at compositionend.
        */
-      const [draft, setDraft] = React.useState(() => ({ ...DEFAULTS, ...settingsValue }))
+      const [draft, setDraft] = React.useState(() => ({ ...DEFAULTS, ...uiValue(settingsValue) }))
       React.useEffect(() => {
         // External changes (other surfaces writing the same namespace) flow
         // back into the draft. During composition this would clobber typing,
         // so the effect is skipped while composing.
-        if (!composingRef.current) setDraft({ ...DEFAULTS, ...settingsValue })
+        if (!composingRef.current) setDraft({ ...DEFAULTS, ...uiValue(settingsValue) })
       }, [settingsValue])
 
       const composingRef = React.useRef(false)

@@ -1,6 +1,6 @@
 {
   "name": "dsh-round-inject",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Periodic prompt injection for the DeepSeek Harness Web GUI: every N model invocations (conversation turns and tool-call steps both count) the plugin injects a user-configured prompt as a model-visible user message; the first injection happens at conversation start.",
   "keywords": [
     "dsh",

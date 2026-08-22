@@ -12,8 +12,8 @@ Every N model invocations — **conversation turns and tool-call steps each coun
 
 ## Features
 
-- **Round counting** — every model invocation counts once, including steps triggered by tool results (a tool call is followed by another model call = another step). The counter is per agent (main session and subagents are isolated).
-- **Periodic injection** — when the counter reaches the configured interval (default **80**), the configured prompt is appended to that step's messages. The injected message carries `source: { kind: 'plugin', plugin: 'round-inject' }`, is persisted to the session log, and is visible to the model.
+- **Round counting** — every model invocation counts once, including steps triggered by tool results (a tool call is followed by another model call = another step). Counting rides the durable `sessionProjections` seam (the same mechanism the built-in "N 轮 · M 步" stats line uses): the counter is a persisted projection per session, so **compaction, paging, session resume and host restarts cannot reset it**.
+- **Periodic injection** — when the durable counter reaches the configured interval (default **80**), the configured prompt is appended to that step's messages. The injected message carries `source: { kind: 'plugin', plugin: 'round-inject' }`, is persisted to the session log, and is visible to the model.
 - **Inject at conversation start** — each new conversation injects once immediately (does not consume a round), then the interval restarts.
 - **Settings UI** — Settings → **提示词注入**: enable switch, interval (number input, default 80), prompt text (multi-line input), and an "inject at conversation start" switch. Writes go through the standard `settingsScope` service to the `round-inject` namespace (persisted in the DSH settings document).
 - **Safe by default** — empty prompt ⇒ nothing is injected; disabled ⇒ no counting and no injection; a step that does not actually call the model is never counted.
@@ -46,12 +46,30 @@ All values can be changed live from Settings → 提示词注入 without a resta
 
 ## How it works
 
-The plugin listens to the `agent/pre-step` waterfall (one event per proposed step = one model call). After `next()` yields the loop's own decision, the plugin:
+The plugin uses two halves that share one durable counter:
 
-1. ignores `reject` decisions and steps with an empty message set (those never call the model);
-2. reads the latest config from the `round-inject` namespace;
-3. counts: the first step of a conversation injects once when `injectOnStart` is on; afterwards the counter increments per entering step and fires when it reaches `interval`;
-4. on a fire, appends `createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'plugin', plugin: 'round-inject' } })` to the step's messages.
+1. **Durable counting (projection)** — the plugin registers a `round-inject`
+   projection on the `sessionProjections` seam. The projection is a pure fold
+   over the session event stream: every `step/end` (one completed model call,
+   the same event the built-in "N 轮 · M 步" line counts) increments
+   `totalSteps`. The registry checkpoints the state into
+   `<root>/session_projcache.json`, so the count survives compaction, paging,
+   session resume and host restarts — this is what makes the interval
+   reliable over long agent runs (the 0.1.8 and earlier in-memory WeakMap
+   counter could be silently reset by a compact/resume, causing "injected
+   only once").
+2. **Injection (side effect)** — the plugin listens to the `agent/pre-step`
+   waterfall (one event per proposed step). After `next()` yields the loop's
+   own decision, it:
+   - ignores `reject` decisions and steps with an empty message set (those never call the model);
+   - reads the latest config from the `round-inject` namespace;
+   - reads the projected `totalSteps` and compares it against the last
+     injected step number, which is persisted as `lastInjectStep` in the
+     settings namespace (hidden from the UI form);
+   - on conversation start (`lastInjectStep` unset) injects once when
+     `injectOnStart` is on and records the current step as the bookmark;
+   - otherwise, when `totalSteps - lastInjectStep >= interval`, appends
+     `createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'plugin', plugin: 'round-inject' } })` to the step's messages and advances the bookmark.
 
 Because the injected message becomes part of the step's durable user messages, it is model-visible, audit-able in the session log, and works with any model route.
 
