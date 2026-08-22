@@ -50,7 +50,7 @@ export const Config = z.object({
    * from a position that survives compaction/resume/restart. Reset to null on
    * conversation start (injectOnStart) or by the user via the UI.
    */
-  lastInjectStep: z.number().int().min(0).nullable().default(null),
+  lastInjectStep: z.natural().default(null).hidden(),
 })
 
 /** The `{kind:'plugin'}` source stamped on every injected message. */
