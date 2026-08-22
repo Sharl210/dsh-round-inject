@@ -5,23 +5,25 @@
  * model counts once — user turns and tool-call steps alike) and periodically
  * injects a user-configured prompt as a model-visible user message.
  *
- * Counting rides the durable `sessionProjections` seam (the same mechanism
- * the built-in `session-stats` plugin uses for its "N 轮 · M 步" line):
+ * Counting and the injection bookmark both ride the durable
+ * `sessionProjections` seam — the same mechanism the built-in
+ * `session-stats` plugin uses for its "N 轮 · M 步" line:
  *
- *   - the `round-inject` projection is a pure fold that counts every
- *     `step/end` event (each complete model call) into `totalSteps`. The
- *     registry checkpoints that state into `<root>/session_projcache.json`,
- *     so the count survives compaction, paging, session resume and even a
- *     host restart — unlike an in-memory WeakMap, which a compact/resume
- *     could silently reset (the "只注入一次" bug).
- *   - injection is a side effect on `agent/pre-step`: it reads the projected
- *     `totalSteps` and compares it against the last injected step number,
- *     which is persisted in the `round-inject` settings namespace, so the
- *     interval restarts from the durable position, not from zero.
+ *   - the `round-inject` projection is a pure fold over the session event
+ *     stream. `step/end` (each completed model call) increments
+ *     `totalSteps`; a plugin-appended `round-inject/committed` event records
+ *     `lastInjectStep`. The registry checkpoints that state into
+ *     `<root>/session_projcache.json`, so BOTH values survive compaction,
+ *     paging, session resume and host restarts.
+ *   - Both values are per-session (the projection cell is keyed by session),
+ *     so two sessions never share a bookmark — the 0.1.9 bug stored
+ *     `lastInjectStep` in the global settings namespace, so a long session's
+ *     bookmark (e.g. 315) leaked into every other session and their counters
+ *     (e.g. 11) could never reach it, silently disabling injection.
  *
- * The injected message becomes part of that step's durable user messages —
- * model-visible, source-attributed (`plugin: round-inject`), and
- * reconstructable from the session log.
+ * Injection is a side effect on `agent/pre-step`: it reads the projected
+ * `totalSteps` and `lastInjectStep`, and on a fire appends the prompt as a
+ * user message and records the bookmark via `round-inject/committed`.
  */
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -36,67 +38,65 @@ export const Config = z.object({
    * How many model invocations between two injections. Every completed step
    * counts (conversation turns and tool-call steps alike), exactly like the
    * built-in "steps" figure. The first injection is governed by
-   * `injectOnStart`; afterwards the durable step counter restarts from the
-   * last injected step.
+   * `injectOnStart`; afterwards the durable per-session step counter
+   * restarts from the last injected step.
    */
   interval: z.number().step(1).min(1).max(100000).default(80),
   /** The prompt text injected as a user message. Empty ⇒ nothing is injected. */
   prompt: z.string().default(''),
   /** Whether the first injection happens at conversation start. */
   injectOnStart: z.boolean().default(true),
-  /**
-   * Durable bookmark: the `totalSteps` value at the last injection. Stored in
-   * the settings namespace (hidden from the UI form) so the interval restarts
-   * from a position that survives compaction/resume/restart. Reset to null on
-   * conversation start (injectOnStart) or by the user via the UI.
-   */
-  lastInjectStep: z.natural().default(null).hidden(),
 })
 
 /** The `{kind:'plugin'}` source stamped on every injected message. */
 const PLUGIN_SOURCE = Object.freeze({ kind: 'plugin', plugin: 'round-inject' })
 
+/** Session event type the plugin appends to record an injection. */
+const COMMITTED_EVENT = 'round-inject/committed'
+
 /**
- * Projection definition: a pure fold over the session event stream that
- * counts completed model calls. Persisted by the sessionProjections registry
- * (durable checkpoint), so compaction/resume cannot reset it.
+ * Projection definition: a pure fold over the session event stream.
+ * State is per-session (the registry keys cells by session), so different
+ * sessions never share a bookmark. Persisted by the sessionProjections
+ * registry, so compaction/resume cannot reset it.
  */
 const projectionDefinition = {
   key: 'round-inject',
-  stateVersion: 1,
-  init: () => ({ totalSteps: 0 }),
+  stateVersion: 2,
+  init: () => ({ totalSteps: 0, lastInjectStep: null }),
   apply: (state, event) => {
     // A step/end marks one completed model call — the same event the
     // built-in session-stats fold uses for its "steps" figure.
-    if (event.type !== 'step/end') return state
-    return { totalSteps: state.totalSteps + 1 }
+    if (event.type === 'step/end') {
+      return { ...state, totalSteps: state.totalSteps + 1 }
+    }
+    // The plugin appends this after an injection to persist the bookmark
+    // durably (per session). Unknown events pass through untouched.
+    if (event.type === COMMITTED_EVENT) {
+      const step = event.data?.totalSteps
+      if (typeof step !== 'number' || !Number.isFinite(step)) return state
+      return { ...state, lastInjectStep: step }
+    }
+    return state
   },
 }
 
 export function apply(ctx, config) {
   // ── settings ─────────────────────────────────────────────────────────────
-  // Register the namespace when the settings service is mounted. The scope
-  // holds the live config AND the durable lastInjectStep bookmark. Without
-  // the settings service (headless), fall back to the entry config alone and
-  // keep the bookmark in-memory per process.
+  // User-facing config only (enabled / interval / prompt / injectOnStart).
+  // The injection bookmark lives in the per-session projection, NOT here —
+  // a global bookmark leaks across sessions and disables injection in every
+  // session whose counter has not caught up (0.1.9 bug).
   let readConfig = () => config ?? {}
-  let persistBookmark = (step) => {}
-  let readBookmark = () => config?.lastInjectStep ?? null
   ctx.inject(['settings'], (sctx) => {
     const scope = sctx.settings.register('round-inject', Config, { base: config })
     readConfig = () => scope.get() ?? {}
-    readBookmark = () => scope.get()?.lastInjectStep ?? null
-    persistBookmark = (step) => {
-      const current = scope.get() ?? {}
-      if (current.lastInjectStep === step) return
-      void scope.update({ lastInjectStep: step })
-    }
   })
 
   // ── projection registry ──────────────────────────────────────────────────
-  // Register the durable step counter. The registry drives it over every
-  // committed session event and checkpoints the state; headless assemblies
-  // without the registry are simply skipped.
+  // Register the durable per-session counter + bookmark. The registry drives
+  // it over every committed session event and checkpoints the state; headless
+  // assemblies without the registry fall back to in-memory counting.
   let projections = null
   ctx.inject(['sessionProjections'], (sctx) => {
     projections = sctx.sessionProjections
@@ -115,27 +115,29 @@ export function apply(ctx, config) {
     const cfg = readConfig()
     if (!cfg.enabled || !cfg.prompt) return decision
 
-    // Read the durable total-step counter from the projection (compaction and
-    // resume cannot reset it). Without a projection registry, fall back to
-    // the in-memory count so the plugin still works on minimal assemblies.
-    let totalSteps
-    if (projections !== null && agent.session !== undefined) {
-      const state = projections.stateOf(agent.session, 'round-inject')
+    const session = agent.session
+
+    // Read the durable per-session counter from the projection. Without a
+    // projection registry, fall back to an in-memory per-agent counter so
+    // the plugin still works on minimal assemblies.
+    let totalSteps, lastInjectStep
+    if (projections !== null && session !== undefined) {
+      const state = projections.stateOf(session, 'round-inject')
       totalSteps = state?.totalSteps ?? 0
+      lastInjectStep = state?.lastInjectStep ?? null
     } else {
       totalSteps = memorySteps(agent)
+      lastInjectStep = memoryBookmark(agent)
     }
 
-    const lastInjectStep = readBookmark()
-
-    // Conversation start: inject once when enabled, and restart the interval
-    // from this step so the durable counter takes over from here.
+    // Conversation start: inject once when enabled, and record the bookmark
+    // so the durable counter takes over from here.
     if (lastInjectStep === null) {
       if (cfg.injectOnStart && !signal.aborted) {
-        persistBookmark(totalSteps)
+        commit(agent, session, totalSteps)
         return { ...decision, messages: [...decision.messages, makeInjected(cfg.prompt)] }
       }
-      persistBookmark(totalSteps)
+      commit(agent, session, totalSteps)
       return decision
     }
 
@@ -143,10 +145,10 @@ export function apply(ctx, config) {
     // last injection.
     if (totalSteps - lastInjectStep >= cfg.interval) {
       if (!signal.aborted) {
-        persistBookmark(totalSteps)
+        commit(agent, session, totalSteps)
         return { ...decision, messages: [...decision.messages, makeInjected(cfg.prompt)] }
       }
-      persistBookmark(totalSteps)
+      commit(agent, session, totalSteps)
       return decision
     }
 
@@ -154,14 +156,28 @@ export function apply(ctx, config) {
   })
 
   // ── helpers ──────────────────────────────────────────────────────────────
-  // Fallback in-memory step counter (used only when sessionProjections is
-  // absent). Keyed per agent object; not durable, but keeps headless/minimal
-  // assemblies functional.
+  // Fallback in-memory counter/bookmark (used only when sessionProjections is
+  // absent). Not durable, but keeps headless/minimal assemblies functional.
   const memoryCounts = new WeakMap()
+  const memoryMarks = new WeakMap()
   function memorySteps(agent) {
     const n = (memoryCounts.get(agent) ?? 0) + 1
     memoryCounts.set(agent, n)
     return n
+  }
+  function memoryBookmark(agent) {
+    return memoryMarks.get(agent) ?? null
+  }
+
+  /** Record an injection's bookmark (projection event or in-memory fallback). */
+  function commit(agent, session, totalSteps) {
+    if (projections !== null && session !== undefined) {
+      // Append a custom session event; the projection's apply folds it into
+      // the per-session bookmark and the registry persists the checkpoint.
+      session.append(COMMITTED_EVENT, { totalSteps })
+    } else {
+      memoryMarks.set(agent, totalSteps)
+    }
   }
 
   function makeInjected(prompt) {
