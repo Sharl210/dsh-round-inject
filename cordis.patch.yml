@@ -8,5 +8,6 @@
       config:
         enabled: true
         interval: 80
+        startPrompt: ''
         prompt: ''
         injectOnStart: true

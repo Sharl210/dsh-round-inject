@@ -13,9 +13,10 @@ Every N model invocations — **conversation turns and tool-call steps each coun
 ## Features
 
 - **Round counting** — every model invocation counts once, including steps triggered by tool results (a tool call is followed by another model call = another step). Counting rides the durable `sessionProjections` seam (the same mechanism the built-in "N 轮 · M 步" stats line uses): the counter is a persisted projection per session, so **compaction, paging, session resume and host restarts cannot reset it**.
-- **Periodic injection** — when the durable counter reaches the configured interval (default **80**), the configured prompt is appended to that step's messages. The injected message carries `source: { kind: 'plugin', plugin: 'round-inject' }`, is persisted to the session log, and is visible to the model.
-- **Inject at conversation start** — each new conversation injects once immediately (does not consume a round), then the interval restarts.
-- **Settings UI** — Settings → **提示词注入**: enable switch, interval (number input, default 80), prompt text (multi-line input), and an "inject at conversation start" switch. Writes go through the standard `settingsScope` service to the `round-inject` namespace (persisted in the DSH settings document).
+- **Periodic injection** — when the durable counter reaches the configured interval (default **80**), the periodic prompt is appended to that step's messages. The injected message carries `source: { kind: 'plugin', plugin: 'round-inject' }`, is persisted to the session log, and is visible to the model.
+- **Two independent prompts** — the conversation-start prompt (first input box) and the periodic prompt (second input box) are separate: the start injection uses only the start prompt, the periodic injection uses only the periodic prompt. Either can be left empty to disable that side.
+- **Inject at conversation start** — when enabled and the start prompt is non-empty, each new conversation injects the start prompt once (does not consume a round), then the interval restarts.
+- **Settings UI with Save button** — Settings → **提示词注入**: enable switch, interval (number input, default 80), conversation-start prompt (first textarea), periodic prompt (second textarea), and an "inject at conversation start" switch. All edits are draft-only; a **Save** button (bottom-right) commits the whole form to the settings namespace at once. Nothing is written until the user clicks Save. IME composition is protected (Chinese input never pollutes the form).
 - **Safe by default** — empty prompt ⇒ nothing is injected; disabled ⇒ no counting and no injection; a step that does not actually call the model is never counted.
 
 ## Install
