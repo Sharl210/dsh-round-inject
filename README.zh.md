@@ -59,6 +59,22 @@ dsh plugin --profile web add dsh-round-inject
 
 注入会改变注入 step 的请求内容,因此从该请求起 provider KV/prefix cache 会失效一个回合的若干 step。默认 80 轮时影响可忽略;调小轮次会增加失效频率。
 
+## 故障排查
+
+### DSH 共享宿主包声明为 peerDependencies(0.1.6)
+
+插件把全部 DSH 提供的运行时包(`@deepseek-ai/cordis`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-settings`、`@deepseek-ai/schemastery`)声明为 `peerDependencies`,**而非** `dependencies`。DSH 通过共享宿主包目录(`~/.dsh/profiles/node_modules/@deepseek-ai/`)以符号链接指向宿主精确版本,插件必须经宿主解析这些包,不能自装副本。
+
+0.1.6 之前插件把 `dsh-llm` 放在 `dependencies`,导致 pnpm 把独立的 `dsh-llm@0.1.0-rc.8` 提升到 profile 根目录。Node 解析会优先命中这份副本而非宿主的共享符号链接,于是插件与宿主跑在**不同的 `dsh-llm` 实例**上(宿主为 `0.1.1-rc.2`)。两个版本的 `createUserMessage` 签名恰好一致所以能跑,但任何 API 漂移都会静默出错。判断方法:在 profile 下执行 `require.resolve('@deepseek-ai/dsh-llm/package.json')`,若解析到 `profiles/web/node_modules/...` 而非宿主安装路径即为被遮蔽。更新到 0.1.6 后在 profile 里重装以清理旧副本:
+
+```sh
+cd ~/.dsh/profiles/web
+pnpm add "dsh-round-inject@0.1.6"   # 清理旧的提升副本
+node -p "require.resolve('@deepseek-ai/dsh-llm/package.json')"  # 应指向宿主路径,而非 profiles/web/node_modules
+```
+
+### "设置服务不可用" / 设置项不可编辑 / 命名空间缺失
+
 ## 开发
 
 ```

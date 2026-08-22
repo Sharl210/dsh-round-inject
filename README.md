@@ -61,6 +61,18 @@ An injection changes the request content at the injected step, so provider KV/pr
 
 ## Troubleshooting
 
+### DSH shared host packages are `peerDependencies` (0.1.6)
+
+The plugin declares every DSH-provided runtime package (`@deepseek-ai/cordis`, `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-settings`, `@deepseek-ai/schemastery`) as `peerDependencies` — **not** `dependencies`. DSH installs a shared host-package directory (`~/.dsh/profiles/node_modules/@deepseek-ai/`) with symlinks to the exact host versions, so plugins must resolve those packages through the host, never via a self-installed copy.
+
+Before 0.1.6 the plugin shipped `dsh-llm` in `dependencies`, which made pnpm hoist a separate `dsh-llm@0.1.0-rc.8` into the profile root. Node resolution then picked that copy over the host's shared symlink, so the plugin ran against a **different `dsh-llm` instance** than the host (host: `0.1.1-rc.2`). The two versions had identical `createUserMessage` signatures, so it worked by luck — but any API drift would break silently. Symptom to look for: `require.resolve('@deepseek-ai/dsh-llm/package.json')` from the profile resolves to `profiles/web/node_modules/...` instead of the host install. After updating to 0.1.6, run `pnpm install` in the profile so the stale hoisted copy is pruned, then verify it resolves to the host:
+
+```sh
+cd ~/.dsh/profiles/web
+pnpm add "dsh-round-inject@0.1.6"   # prunes the old hoisted dsh-llm copy
+node -p "require.resolve('@deepseek-ai/dsh-llm/package.json')"  # → host path, not profiles/web/node_modules
+```
+
 ### "设置服务不可用" / settings inputs not editable / namespace missing
 
 Symptom: the Settings page renders but shows "设置服务不可用,当前仅使用组合配置默认值", or the inputs are disabled/unfocusable, or `settings.describe` does not list the `round-inject` namespace.
