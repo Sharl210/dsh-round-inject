@@ -146,14 +146,11 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      const settingsScope = ctx.get('settingsScope')
-      const slots = ctx.get('slots')
-      if (settingsScope === undefined || slots === undefined) return
-      const scope = settingsScope.bind({ namespace: NAMESPACE })
+      const scope = ctx.settingsScope.bind({ namespace: NAMESPACE })
 
       ctx.effect(() =>
-        slots.inject('settings.section', () =>
-          slots.register(
+        ctx.slots.inject('settings.section', () =>
+          ctx.slots.register(
             {
               name: 'settings.section',
               id: NAMESPACE,
