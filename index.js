@@ -45,7 +45,7 @@ function createState() {
   return { started: false, count: 0 }
 }
 
-export function apply(ctx) {
+export function apply(ctx, config) {
   /** Per-agent counting state, keyed by the live agent object. */
   const states = new WeakMap()
 
@@ -53,9 +53,9 @@ export function apply(ctx) {
   // Register the namespace when the settings service is mounted, waiting for
   // it via ctx.inject (the settings service may not exist yet at apply time).
   // Without the service, fall back to the entry config alone.
-  let readConfig = () => ctx.config ?? {}
+  let readConfig = () => config ?? {}
   ctx.inject(['settings'], (sctx) => {
-    const scope = sctx.settings.register('round-inject', Config, { base: ctx.config })
+    const scope = sctx.settings.register('round-inject', Config, { base: config })
     readConfig = () => scope.get() ?? {}
   })
 
