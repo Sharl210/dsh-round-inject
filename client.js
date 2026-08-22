@@ -141,9 +141,17 @@ window.__ModuleLoader__.load({
             '开启',
           ),
         }),
-        snapshot.status === 'unavailable'
-          ? h('div', { style: { ...hintStyle, marginTop: 8 } }, '设置服务不可用,当前仅使用组合配置默认值。')
-          : null,
+        snapshot.status === 'loading'
+          ? h('div', { style: { ...hintStyle, marginTop: 8 } }, '正在加载设置…')
+          : snapshot.mode === 'memory'
+            ? h(
+                'div',
+                { style: { ...hintStyle, marginTop: 8 } },
+                '当前通过远程地址访问,DSH 设置仅对本机(localhost)可写。请在测试机本机用 http://127.0.0.1:3080 打开后再修改设置。',
+              )
+            : snapshot.status === 'unavailable'
+              ? h('div', { style: { ...hintStyle, marginTop: 8 } }, '设置服务不可用,当前仅使用组合配置默认值。')
+              : null,
       )
     }
 
