@@ -59,9 +59,25 @@ Because the injected message becomes part of the step's durable user messages, i
 
 An injection changes the request content at the injected step, so provider KV/prefix cache is invalidated from that request onward for one turn's worth of steps. With the default interval of 80 this is negligible; lowering the interval increases invalidation frequency.
 
-### IME input: pinyin/kana no longer written into settings mid-composition (0.1.7)
+### IME input: pinyin/kana never pollute settings, Chinese typing works (0.1.8)
 
-The settings inputs (prompt textarea, interval number) now guard against Chinese/Japanese input-method composition: while the IME is composing (`onCompositionStart` … `onCompositionEnd`), `onChange` is ignored and the value is only committed after `compositionend`. Before 0.1.7, every keystroke of an uncommitted pinyin/kana sequence fired `onChange` and wrote the intermediate characters into the settings namespace (visible as "输入法拼音被记录" in the saved prompt).
+The settings inputs (prompt textarea, interval number) use a **local draft** plus a composition gate:
+
+- `onChange` always updates the local draft, so the controlled field keeps
+  following the user's keystrokes — typing is never swallowed, committed
+  Chinese characters stay on screen.
+- Settings writes are skipped while the IME is composing
+  (`onCompositionStart` … `onCompositionEnd`, plus `nativeEvent.isComposing`),
+  so uncommitted pinyin/kana never reach the settings namespace (the original
+  "输入法拼音被记录" bug).
+- `onCompositionEnd` writes the final committed value (the DOM value at that
+  moment, i.e. the selected hanzi/kana) once.
+
+Version history:
+- 0.1.7 regressed: `onChange` was fully ignored during composition, which froze
+  the React controlled value at the stale snapshot; the next render then reset
+  the field and swallowed the committed Chinese characters ("选完字上不了屏").
+- 0.1.8 (current) fixes this with the local-draft approach above.
 
 Related upstream DSH issue (chat composer): clicking the Send button while composing submitted the uncommitted pinyin — the Enter path already guarded, the button path did not. See `docs/dsh-composer-ime-patch.md` for the one-line upstream patch.
 

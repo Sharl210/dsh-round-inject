@@ -71,35 +71,63 @@ window.__ModuleLoader__.load({
         React.useCallback((cb) => scope.subscribe(cb), [scope]),
         React.useCallback(() => scope.getSnapshot(), [scope]),
       )
-      const value = { ...DEFAULTS, ...(snapshot.value ?? {}) }
       const ready = snapshot.status === 'ready'
+      const settingsValue = snapshot.value ?? {}
+
+      /**
+       * Local draft: the controlled fields read from `draft`, never directly
+       * from the settings snapshot. This keeps typing smooth during IME
+       * composition — a fully controlled field whose onChange is ignored gets
+       * its value reset to the stale snapshot on the next render, which
+       * swallowed committed Chinese characters (the 0.1.7 regression).
+       * Settings writes are gated by the composition flag instead: pinyin/kana
+       * intermediate text never reaches the settings, and the final committed
+       * value is written once at compositionend.
+       */
+      const [draft, setDraft] = React.useState(() => ({ ...DEFAULTS, ...settingsValue }))
+      React.useEffect(() => {
+        // External changes (other surfaces writing the same namespace) flow
+        // back into the draft. During composition this would clobber typing,
+        // so the effect is skipped while composing.
+        if (!composingRef.current) setDraft({ ...DEFAULTS, ...settingsValue })
+      }, [settingsValue])
+
+      const composingRef = React.useRef(false)
 
       const setField = (field, next) => {
         if (!snapshot.writable) return
         void scope.set(field, next)
       }
 
-      // Chinese/Japanese IME protection: while the composition is in flight the
-      // field's value is the uncommitted pinyin/kana. Committing it would store
-      // the intermediate characters into the settings (the "输入法拼音被记录"
-      // bug). We defer writes until compositionend and ignore onChange while
-      // composing.
-      const composingRef = React.useRef(false)
-      const commitComposed = (e, field) => {
-        composingRef.current = false
-        setField(field, e.target.value)
-      }
-      const textFieldProps = (field) => ({
+      /**
+       * IME-safe props for a text/number field:
+       * - value comes from the local draft, so input is never swallowed;
+       * - onChange always updates the draft, and writes settings only when no
+       *   composition is in flight;
+       * - compositionend writes the final committed value (the DOM's value at
+       *   that moment, which is the selected hanzi/kana).
+       * `normalize` optionally transforms/validates the raw value; returning
+       * false skips the settings write (used by the interval field).
+       */
+      const textFieldProps = (field, normalize) => ({
         disabled: !ready,
+        value: draft[field],
         onCompositionStart: () => {
           composingRef.current = true
         },
-        onCompositionEnd: (e) => commitComposed(e, field),
+        onCompositionEnd: (e) => {
+          composingRef.current = false
+          const final = e.target.value
+          setDraft((d) => ({ ...d, [field]: final }))
+          const out = normalize ? normalize(final) : final
+          if (out !== false) setField(field, out)
+        },
         onChange: (e) => {
-          // e.nativeEvent.isComposing covers browsers that do not fire
-          // compositionstart/end reliably on controlled inputs.
+          const next = e.target.value
+          setDraft((d) => ({ ...d, [field]: next }))
           if (composingRef.current || e.nativeEvent.isComposing) return
-          setField(field, e.target.value)
+          const out = normalize ? normalize(next) : next
+          if (out !== false) setField(field, out)
         },
       })
 
@@ -114,7 +142,7 @@ window.__ModuleLoader__.load({
             { style: toggleStyle },
             h('input', {
               type: 'checkbox',
-              checked: Boolean(value.enabled),
+              checked: Boolean(draft.enabled),
               disabled: !ready,
               onChange: (e) => setField('enabled', e.target.checked),
             }),
@@ -129,13 +157,10 @@ window.__ModuleLoader__.load({
             min: 1,
             max: 100000,
             step: 1,
-            value: value.interval,
-            ...textFieldProps('interval'),
-            onChange: (e) => {
-              if (composingRef.current || e.nativeEvent.isComposing) return
-              const n = Number(e.target.value)
-              if (Number.isSafeInteger(n) && n >= 1 && n <= 100000) setField('interval', n)
-            },
+            ...textFieldProps('interval', (raw) => {
+              const n = Number(raw)
+              return Number.isSafeInteger(n) && n >= 1 && n <= 100000 ? n : false
+            }),
             style: { ...inputStyle, maxWidth: 160 },
           }),
         }),
@@ -144,7 +169,6 @@ window.__ModuleLoader__.load({
           hint: '达到触发轮次时作为一条用户消息注入给模型。留空则不注入。',
           children: h('textarea', {
             rows: 6,
-            value: value.prompt,
             ...textFieldProps('prompt'),
             placeholder: '在这里输入每 N 轮注入给模型的提示词…',
             style: inputStyle,
@@ -158,7 +182,7 @@ window.__ModuleLoader__.load({
             { style: toggleStyle },
             h('input', {
               type: 'checkbox',
-              checked: Boolean(value.injectOnStart),
+              checked: Boolean(draft.injectOnStart),
               disabled: !ready,
               onChange: (e) => setField('injectOnStart', e.target.checked),
             }),
