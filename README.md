@@ -59,6 +59,28 @@ Because the injected message becomes part of the step's durable user messages, i
 
 An injection changes the request content at the injected step, so provider KV/prefix cache is invalidated from that request onward for one turn's worth of steps. With the default interval of 80 this is negligible; lowering the interval increases invalidation frequency.
 
+## Troubleshooting
+
+### "设置服务不可用" / settings inputs not editable / namespace missing
+
+Symptom: the Settings page renders but shows "设置服务不可用,当前仅使用组合配置默认值", or the inputs are disabled/unfocusable, or `settings.describe` does not list the `round-inject` namespace.
+
+Root cause (fixed in **0.1.5**): the host plugin read its composition config via `ctx.config`. Cordis 4 guards property access on the context — reading `ctx.config` without declaring `inject: ['config']` throws (`cannot get property "config" without inject`), so the host `apply()` failed on load. The client page still rendered independently (it is a separate bundle), which made the failure look like a settings-service issue. The fix reads config from the second `apply(ctx, config)` argument (the loader passes the resolved entry config there), and registers the settings namespace with that config as its base layer.
+
+If you still see the symptom after updating to 0.1.5, verify:
+
+```sh
+# 1. the profile actually resolved 0.1.5 (pnpm autoInstallPeers=false can leave stale peers)
+cd ~/.dsh/profiles/web && node -p "require('dsh-round-inject/package.json').version"
+# 2. the namespace is registered (from the running instance)
+#    settings.describe should include round-inject
+# 3. restart the profile after the upgrade — host plugins load at startup
+```
+
+### "loaded without registering \"dsh-round-inject\" via __ModuleLoader__.load"
+
+The client bundle must register the exact npm package name (`dsh-round-inject`) as its module id — client-modules serves `/plugins/<pkg>/client.js` and verifies the bundle registers that exact id. Current `client.js` uses `id: 'dsh-round-inject'`. Reinstall and hard-refresh the page (the client bundle is cache-busted by a `?rev=` query).
+
 ## Development
 
 ```
