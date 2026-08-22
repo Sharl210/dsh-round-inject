@@ -11,7 +11,9 @@
  * `round-inject` namespace (hosted by dsh-client-ui-settings). No custom RPC.
  */
 window.__ModuleLoader__.load({
-  id: 'round-inject',
+  // Must equal the npm package name: client-modules serves /plugins/<pkg>/client.js
+  // and verifies the bundle registers that exact id.
+  id: 'dsh-round-inject',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
