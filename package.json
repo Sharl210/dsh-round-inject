@@ -48,11 +48,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR-GITHUB-USERNAME/dsh-round-inject.git"
+    "url": "git+https://github.com/Sharl210/dsh-round-inject.git"
   },
-  "homepage": "https://github.com/YOUR-GITHUB-USERNAME/dsh-round-inject#readme",
+  "homepage": "https://github.com/Sharl210/dsh-round-inject#readme",
   "bugs": {
-    "url": "https://github.com/YOUR-GITHUB-USERNAME/dsh-round-inject/issues"
+    "url": "https://github.com/Sharl210/dsh-round-inject/issues"
   },
-  "author": ""
+  "author": "Aurorix"
 }
