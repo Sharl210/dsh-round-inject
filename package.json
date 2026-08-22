@@ -1,0 +1,57 @@
+{
+  "name": "dsh-round-inject",
+  "version": "0.1.0",
+  "description": "Periodic prompt injection for the DeepSeek Harness Web GUI: every N model invocations (conversation turns and tool-call steps both count) the plugin injects a user-configured prompt as a model-visible user message; the first injection happens at conversation start.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "prompt-inject",
+    "prompt-injection",
+    "round",
+    "periodic",
+    "web"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR-GITHUB-USERNAME/dsh-round-inject.git"
+  },
+  "homepage": "https://github.com/YOUR-GITHUB-USERNAME/dsh-round-inject#readme",
+  "bugs": {
+    "url": "https://github.com/YOUR-GITHUB-USERNAME/dsh-round-inject/issues"
+  },
+  "author": ""
+}

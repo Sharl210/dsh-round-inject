@@ -1,0 +1,12 @@
+# dsh-round-inject bundle patch: inserts the plugin into a profile's layer stack.
+#
+# A patch replaces the targeted row's whole `config`, so restate every key you
+# want to keep when overriding from a profile / --patch layer.
+- insert:
+    - id: round-inject
+      name: 'dsh-round-inject'
+      config:
+        enabled: true
+        interval: 80
+        prompt: ''
+        injectOnStart: true
