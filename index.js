@@ -50,14 +50,14 @@ export function apply(ctx) {
   const states = new WeakMap()
 
   // ── settings ─────────────────────────────────────────────────────────────
-  // Register the namespace when the settings service is mounted; otherwise
-  // fall back to the entry config alone (composition works either way).
-  const settings = ctx.get('settings')
+  // Register the namespace when the settings service is mounted, waiting for
+  // it via ctx.inject (the settings service may not exist yet at apply time).
+  // Without the service, fall back to the entry config alone.
   let readConfig = () => ctx.config ?? {}
-  if (settings !== undefined) {
-    const scope = settings.register('round-inject', Config, { base: ctx.config })
+  ctx.inject(['settings'], (sctx) => {
+    const scope = sctx.settings.register('round-inject', Config, { base: ctx.config })
     readConfig = () => scope.get() ?? {}
-  }
+  })
 
   // ── conversation start ───────────────────────────────────────────────────
   // Reset the agent's counter so the first entering step can inject once.
