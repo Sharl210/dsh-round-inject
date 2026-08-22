@@ -59,6 +59,12 @@ Because the injected message becomes part of the step's durable user messages, i
 
 An injection changes the request content at the injected step, so provider KV/prefix cache is invalidated from that request onward for one turn's worth of steps. With the default interval of 80 this is negligible; lowering the interval increases invalidation frequency.
 
+### IME input: pinyin/kana no longer written into settings mid-composition (0.1.7)
+
+The settings inputs (prompt textarea, interval number) now guard against Chinese/Japanese input-method composition: while the IME is composing (`onCompositionStart` … `onCompositionEnd`), `onChange` is ignored and the value is only committed after `compositionend`. Before 0.1.7, every keystroke of an uncommitted pinyin/kana sequence fired `onChange` and wrote the intermediate characters into the settings namespace (visible as "输入法拼音被记录" in the saved prompt).
+
+Related upstream DSH issue (chat composer): clicking the Send button while composing submitted the uncommitted pinyin — the Enter path already guarded, the button path did not. See `docs/dsh-composer-ime-patch.md` for the one-line upstream patch.
+
 ## Troubleshooting
 
 ### DSH shared host packages are `peerDependencies` (0.1.6)

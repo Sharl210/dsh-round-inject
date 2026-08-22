@@ -79,6 +79,30 @@ window.__ModuleLoader__.load({
         void scope.set(field, next)
       }
 
+      // Chinese/Japanese IME protection: while the composition is in flight the
+      // field's value is the uncommitted pinyin/kana. Committing it would store
+      // the intermediate characters into the settings (the "输入法拼音被记录"
+      // bug). We defer writes until compositionend and ignore onChange while
+      // composing.
+      const composingRef = React.useRef(false)
+      const commitComposed = (e, field) => {
+        composingRef.current = false
+        setField(field, e.target.value)
+      }
+      const textFieldProps = (field) => ({
+        disabled: !ready,
+        onCompositionStart: () => {
+          composingRef.current = true
+        },
+        onCompositionEnd: (e) => commitComposed(e, field),
+        onChange: (e) => {
+          // e.nativeEvent.isComposing covers browsers that do not fire
+          // compositionstart/end reliably on controlled inputs.
+          if (composingRef.current || e.nativeEvent.isComposing) return
+          setField(field, e.target.value)
+        },
+      })
+
       return h(
         'div',
         { style: { width: '100%', maxWidth: 560 } },
@@ -106,8 +130,9 @@ window.__ModuleLoader__.load({
             max: 100000,
             step: 1,
             value: value.interval,
-            disabled: !ready,
+            ...textFieldProps('interval'),
             onChange: (e) => {
+              if (composingRef.current || e.nativeEvent.isComposing) return
               const n = Number(e.target.value)
               if (Number.isSafeInteger(n) && n >= 1 && n <= 100000) setField('interval', n)
             },
@@ -120,9 +145,8 @@ window.__ModuleLoader__.load({
           children: h('textarea', {
             rows: 6,
             value: value.prompt,
-            disabled: !ready,
+            ...textFieldProps('prompt'),
             placeholder: '在这里输入每 N 轮注入给模型的提示词…',
-            onChange: (e) => setField('prompt', e.target.value),
             style: inputStyle,
           }),
         }),
