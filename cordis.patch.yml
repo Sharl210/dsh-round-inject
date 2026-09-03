@@ -7,7 +7,7 @@
       name: 'dsh-round-inject'
       config:
         enabled: true
-        interval: 80
+        interval: 50
         startPrompt: ''
         prompt: ''
         injectOnStart: true

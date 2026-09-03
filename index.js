@@ -7,23 +7,40 @@
  *
  * Two durable, log-safe mechanisms work together:
  *
- *   - Counting rides the `sessionProjections` seam (the same mechanism the
- *     built-in `session-stats` plugin uses): the `round-inject` projection is
- *     a pure fold that counts every `step/end` into `totalSteps`, and the
- *     registry checkpoints it into `<root>/session_projcache.json`. The count
- *     therefore survives compaction, paging, session resume and restarts.
+ *   - Counting AND the injection bookmark ride the `sessionProjections` seam
+ *     (the same mechanism the built-in `session-stats` plugin uses): the
+ *     `round-inject` projection is a pure fold over the session event stream
+ *     that derives {totalSteps, lastInjectSeq, sinceInject} from built-in
+ *     events only — `step/end` advances the counters, and an injected
+ *     `user/message` (identifiable by its `source: {kind:'plugin',
+ *     plugin:'round-inject'}` marker) resets the "since last injection"
+ *     counter. The registry checkpoints the fold into
+ *     `<root>/session_projcache/`, so every value survives compaction,
+ *     paging, session resume and host restarts.
  *
- *   - The injection bookmark is DERIVED FROM THE SESSION LOG, never written
- *     as a custom event: every injected prompt is itself a durable
- *     `user/message` event carrying `source: { kind: 'plugin', plugin:
- *     'round-inject' }` (a known, persistable event type). "Steps since the
- *     last injection" = the number of `step/end` events after the last such
- *     injected message. This is per-session by construction (each session
- *     has its own log), survives compaction/resume/restart, and never
- *     touches the event-type vocabulary — the 0.1.11 bug appended a custom
- *     `round-inject/committed` event, which the persistence layer rejects on
- *     restore (`assertEventsSupported`: unknown type, not ignorable, whole
- *     log refused), so a restart bricked every session that had injected.
+ *   - The bookmark is DERIVED STATE, never a custom log event: no
+ *     round-inject-specific event type is ever appended, so restoring a
+ *     session can never fail on this plugin's vocabulary (the 0.1.11 bug
+ *     appended a custom `round-inject/committed` event, which the
+ *     persistence layer rejects on restore — `assertEventsSupported`:
+ *     unknown type, not ignorable, whole log refused).
+ *
+ * Injection timing (measured in completed model calls, the same "steps"
+ * figure the GUI shows):
+ *
+ *   - with `injectOnStart` + `startPrompt`: the very first model call of a
+ *     session carries the start prompt;
+ *   - afterwards a periodic prompt is attached to the model call that comes
+ *     exactly `interval` completed steps after the previous injection, i.e.
+ *     injected calls sit at steps 1, 1+interval, 1+2·interval, …;
+ *   - without a start prompt the periodic prompt rides steps interval,
+ *     2·interval, 3·interval, …
+ *
+ * Because the bookmark lives inside the projection state (one O(1) fold per
+ * event), the counter can never drift from the log and there is no full-log
+ * scan on every step (the 0.1.13 crash was a per-step scan of
+ * `session.events`, which is not an API of the session object — the public
+ * surface is `session.snapshotEvents()`).
  */
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -35,13 +52,13 @@ export const Config = z.object({
   /** Master switch: when false the plugin counts nothing and injects nothing. */
   enabled: z.boolean().default(true),
   /**
-   * How many model invocations between two injections. Every completed step
-   * counts (conversation turns and tool-call steps alike), exactly like the
-   * built-in "steps" figure. The first injection is governed by
-   * `injectOnStart`; afterwards the per-session log-derived counter restarts
-   * from the last injected step.
+   * How many completed model calls between two injections (conversation turns
+   * and tool-call steps both count, exactly like the built-in "steps"
+   * figure). With a start prompt the first injection is the session's first
+   * call and the periodic counter starts from that call; without one the
+   * periodic prompt first rides the `interval`-th call.
    */
-  interval: z.number().step(1).min(1).max(100000).default(80),
+  interval: z.number().step(1).min(1).max(100000).default(50),
   /**
    * Periodic prompt: injected every `interval` model invocations (the second
    * input box). Empty ⇒ periodic injection is disabled (only the
@@ -62,19 +79,52 @@ export const Config = z.object({
 /** The `{kind:'plugin'}` source stamped on every injected message. */
 const PLUGIN_SOURCE = Object.freeze({ kind: 'plugin', plugin: 'round-inject' })
 
+/** True when an event is one of this plugin's own injected user messages. */
+function isInjectedMessage(event) {
+  if (event.type !== 'user/message') return false
+  const source = event.data?.source
+  return source?.kind === 'plugin' && source?.plugin === 'round-inject'
+}
+
 /**
- * Projection definition: a pure fold over the session event stream that
- * counts completed model calls. No custom event types are ever appended —
- * the fold only consumes built-in `step/end` events, so restoring a session
- * can never fail on this plugin's vocabulary.
+ * Projection definition: a pure fold over the session event stream. It never
+ * appends a custom event — it only consumes the built-in `step/end` and
+ * `user/message` events, so restoring a session can never fail on this
+ * plugin's vocabulary, and the registry's durable checkpoint keeps the state
+ * across compaction/resume/restart.
+ *
+ * State:
+ *   - `totalSteps`    — completed model calls (`step/end` count), the GUI
+ *                       "steps" figure.
+ *   - `lastInjectSeq` — seq of the last injected user message; -1 = this
+ *                       session has never injected. Set when an injected
+ *                       message is folded (its seq lands between the
+ *                       injected step's `step/start` and `step/end`).
+ *   - `sinceInject`   — completed model calls after `lastInjectSeq`
+ *                       (the injected step's own completion counts as 1, so
+ *                       the next injection fires on the call exactly
+ *                       `interval` steps after the previous one).
  */
 const projectionDefinition = {
   key: 'round-inject',
-  stateVersion: 1,
-  init: () => ({ totalSteps: 0 }),
+  stateVersion: 2,
+  init: () => ({ totalSteps: 0, lastInjectSeq: -1, sinceInject: 0 }),
   apply: (state, event) => {
-    if (event.type !== 'step/end') return state
-    return { totalSteps: state.totalSteps + 1 }
+    switch (event.type) {
+      case 'step/end':
+        return {
+          totalSteps: state.totalSteps + 1,
+          lastInjectSeq: state.lastInjectSeq,
+          sinceInject: state.lastInjectSeq >= 0 ? state.sinceInject + 1 : state.sinceInject,
+        }
+      case 'user/message':
+        if (!isInjectedMessage(event)) return state
+        // This injected message will itself be followed by its step/end, so
+        // resetting sinceInject here makes that step the new counting origin.
+        return { totalSteps: state.totalSteps, lastInjectSeq: event.seq, sinceInject: 0 }
+      default:
+        return state
+    }
   },
 }
 
@@ -107,75 +157,59 @@ export function apply(ctx, config) {
     const hasPeriodic = cfg.prompt
     if (!hasStart && !hasPeriodic) return decision
 
-    const session = agent.session
-
-    // Current completed model calls from the durable projection (fallback to
-    // an in-memory count when the projection registry is absent).
-    let totalSteps
-    if (projections !== null && session !== undefined) {
-      totalSteps = projections.stateOf(session, 'round-inject')?.totalSteps ?? 0
-    } else {
-      totalSteps = memorySteps(agent)
-    }
-
-    // Steps since the last injection, derived from the session log: find the
-    // last injected user message and count the step/end events after it.
-    // `null` means no injection has happened in this session yet.
-    const since = stepsSinceLastInject(session)
-
+    // Decide inside a guard: an injection-decision bug must never take down
+    // the whole agent step (the 0.1.13 regression surfaced as a per-step
+    // "session.events is not iterable" and killed every turn).
     let text = null
-    if (since === null) {
-      // No injection yet in this session → conversation-start prompt.
-      if (hasStart) {
-        text = cfg.startPrompt
-      } else if (hasPeriodic) {
-        // start disabled/empty: fire the first periodic one once `interval`
-        // calls elapsed from the start of the session.
-        if (totalSteps >= cfg.interval) text = cfg.prompt
+    try {
+      const session = agent.session
+      const state = readProjectionState(session)
+      if (state.lastInjectSeq < 0) {
+        // No injection has happened in this session yet.
+        if (hasStart) {
+          // Conversation-start prompt rides the very first model call.
+          text = cfg.startPrompt
+        } else if (hasPeriodic && state.totalSteps + 1 >= cfg.interval) {
+          // Start disabled/empty: the first periodic call is the
+          // `interval`-th model call of the session.
+          text = cfg.prompt
+        }
+      } else if (hasPeriodic && state.sinceInject >= cfg.interval) {
+        // Periodic: the next model call is exactly `interval` completed
+        // steps after the previous injection.
+        text = cfg.prompt
       }
-    } else {
-      // Periodic: inject when `interval` model calls have elapsed since the
-      // last injection.
-      if (hasPeriodic && since >= cfg.interval) text = cfg.prompt
+    } catch (error) {
+      console.warn('[round-inject] injection decision failed; skipping injection', error)
+      return decision
     }
 
-    if (text === null || signal.aborted) return decision
+    if (!text || signal.aborted) return decision
 
     return { ...decision, messages: [...decision.messages, makeInjected(text)] }
   })
 
   // ── helpers ──────────────────────────────────────────────────────────────
-  const memoryCounts = new WeakMap()
-  function memorySteps(agent) {
-    const n = (memoryCounts.get(agent) ?? 0) + 1
-    memoryCounts.set(agent, n)
-    return n
-  }
-
   /**
-   * Log-derived bookmark: count `step/end` events after the last injected
-   * user message in this session's log. The injected messages are durable
-   * `user/message` events with the plugin source marker — a built-in,
-   * persistable vocabulary — so this never writes custom events and survives
-   * compaction/resume/restart (the log and its sources are replayed).
-   * Returns null when no injection has happened yet in this session.
+   * Current fold state for the agent's session. Primary source is the
+   * projection registry (live fold, already driven to the log tail — cheap,
+   * durable and consistent). When the registry is unavailable (minimal /
+   * headless assemblies, or a session that predates the registry), fall back
+   * to folding an immutable snapshot of the session log once. The snapshot
+   * API is `session.snapshotEvents()` — `session.events` does not exist on
+   * the session object (0.1.13 crashed on it).
    */
-  function stepsSinceLastInject(session) {
-    if (session === undefined) return null
-    let lastInjectSeq = -1
-    for (const ev of session.events) {
-      if (ev.type !== 'user/message') continue
-      const src = ev.data?.source
-      if (src?.kind === 'plugin' && src?.plugin === 'round-inject') lastInjectSeq = ev.seq
+  function readProjectionState(session) {
+    if (projections !== null && session !== undefined) {
+      const state = projections.stateOf(session, 'round-inject')
+      if (state !== undefined) return state
     }
-    if (lastInjectSeq === -1) return null
-
-    let steps = 0
-    for (const ev of session.events) {
-      if (ev.seq <= lastInjectSeq) continue
-      if (ev.type === 'step/end') steps += 1
+    if (session === undefined || typeof session.snapshotEvents !== 'function') {
+      return projectionDefinition.init()
     }
-    return steps
+    let state = projectionDefinition.init()
+    for (const event of session.snapshotEvents()) state = projectionDefinition.apply(state, event)
+    return state
   }
 
   function makeInjected(prompt) {

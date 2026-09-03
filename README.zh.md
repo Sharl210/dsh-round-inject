@@ -7,15 +7,15 @@
 | | |
 | --- | --- |
 | Host | `agent/pre-step` 瀑布(统计每个真正进入的 step,并把注入消息追加到该 step 的请求) |
-| Client | 设置面板:输入框 + 触发轮次(默认 **80**) |
+| Client | 设置面板:两个输入框 + 触发轮次(默认 **50**) |
 | 配置 | `round-inject` 设置命名空间,由 DSH 设置提供方持久化 |
 
 ## 功能
 
 - **轮次统计** —— 每次模型调用计 1 次,包括工具结果触发的下一步(工具调用后模型会再次被调用 = 又一个 step)。计数器按 agent 隔离(主会话与子代理互不影响)。
-- **周期注入** —— 计数达到配置的轮次(默认 80)时,把配置的提示词追加到该步消息中。注入消息携带 `source: { kind: 'plugin', plugin: 'round-inject' }`,写入会话日志,模型可见。
-- **对话开始注入** —— 每次新对话立即注入一次(不计入轮次),随后重新开始计数。
-- **设置界面** —— 设置 → **提示词注入**:启用开关、触发轮次(数字输入,默认 80)、注入提示词(多行输入框)、对话开始时注入开关。写入通过标准 `settingsScope` 服务落到 `round-inject` 命名空间(持久化到 DSH 设置文档)。
+- **周期注入** —— 距上次注入恰好满 `interval` 个已完成模型调用后,把配置的提示词追加到那一步的消息中(默认 **50**):开启开始注入时,注入发生在会话的第 1、1+interval、1+2·interval… 次调用;关闭时发生在第 interval、2·interval、3·interval… 次调用。注入消息携带 `source: { kind: 'plugin', plugin: 'round-inject' }`,写入会话日志,模型可见。
+- **对话开始注入** —— 开启且填了开始提示词时,会话的**第一次**模型调用即携带开始提示词,周期计数随后从这次调用重新起算。
+- **设置界面** —— 设置 → **提示词注入**:启用开关、触发轮次(数字输入,默认 50)、注入提示词(多行输入框)、对话开始时注入开关。写入通过标准 `settingsScope` 服务落到 `round-inject` 命名空间(持久化到 DSH 设置文档)。
 - **默认安全** —— 提示词为空 ⇒ 不注入;关闭 ⇒ 不计数也不注入;不真正调用模型的 step 不会被计数。
 
 ## 安装
@@ -37,7 +37,7 @@ dsh plugin --profile web add dsh-round-inject
   name: 'dsh-round-inject'
   config:
     enabled: true        # 总开关
-    interval: 80         # 两次注入之间的模型调用次数
+    interval: 50         # 两次注入之间的模型调用次数
     prompt: ''           # 注入的提示词文本(为空则不注入)
     injectOnStart: true  # 每次对话开始注入一次
 ```
@@ -46,18 +46,29 @@ dsh plugin --profile web add dsh-round-inject
 
 ## 工作原理
 
-插件监听 `agent/pre-step` 瀑布(每个拟议 step = 一次模型调用)。在 `next()` 返回 loop 自身决策后:
+宿主在 `sessionProjections` 接缝上注册**一个**纯 fold,并在 `agent/pre-step` 瀑布上执行注入:
 
-1. 忽略 `reject` 决策与空消息 step(这些不会调用模型);
-2. 从 `round-inject` 命名空间读取最新配置;
-3. 计数:对话第一步在 `injectOnStart` 开启时注入一次;之后每个进入的 step 计数,达到 `interval` 时触发;
-4. 触发时向该步消息追加 `createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'plugin', plugin: 'round-inject' } })`。
-
-注入消息成为该步持久化用户消息的一部分,因此模型可见、会话日志可审计,并适用于任何模型路由。
+1. **计数与书签共用一个 fold** —— `round-inject` 投影是对会话事件流的纯折叠,只消费内置事件、从不追加自定义事件类型,因此恢复会话永远不会因本插件的词汇失败:
+   - 每个 `step/end`(一次完成的模型调用,与内置 "N 轮 · M 步" 统计同一事件)推进 `totalSteps`,并在会话注入过之后推进 `sinceInject`(距上次注入消息已完成的调用数);
+   - 一条由本插件追加的 `user/message`(以其 `source: { kind: 'plugin', plugin: 'round-inject' }` 识别)记录 `lastInjectSeq` 并把 `sinceInject` 归零。
+   注册表把状态检查点到 `<root>/session_projcache/`,因此计数与书签都扛得住压缩、翻页、会话恢复与宿主重启。书签放在这份**派生状态**里(而不是 0.1.11 会跨会话泄漏的设置命名空间,也不是 0.1.13 中不存在的 `session.events` —— 后者让每一步都崩溃),使间隔**精确**:每个事件 O(1) 折叠,绝不每步全量扫描日志。
+2. **注入(副作用)** —— 监听 `agent/pre-step` 瀑布(每个拟议 step 一次)。在 `next()` 返回 loop 自身决策后:
+   - 忽略 `reject` 决策与空消息 step(这些不会调用模型);
+   - 从 `round-inject` 命名空间读取最新配置;
+   - 读取投影状态(`totalSteps` / `sinceInject` / `lastInjectSeq`)并判定:
+     - 本会话从未注入且开启开始注入 → 把开始提示词追加到**第一次**模型调用;
+     - 从未注入且无开始提示词 → 把周期提示词追加到会话第 `interval` 次调用;
+     - 否则当 `sinceInject >= interval` → 把周期提示词追加到下一次模型调用 —— 正好在上次注入之后 `interval` 步;
+   - 整个判定有防护:任何意外错误只记 warning 并放行该步(不注入),插件永远无法拖垮一轮 agent 运行。
+   注入消息作为 `createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'plugin', plugin: 'round-inject' } })` 追加,成为该步持久化用户消息的一部分 —— 模型可见、会话日志可审计,并适用于任何模型路由。
 
 ### KV cache 说明
 
-注入会改变注入 step 的请求内容,因此从该请求起 provider KV/prefix cache 会失效一个回合的若干 step。默认 80 轮时影响可忽略;调小轮次会增加失效频率。
+注入会改变注入 step 的请求内容,因此从该请求起 provider KV/prefix cache 会失效一个回合的若干 step。默认 50 轮时影响可忽略;调小轮次会增加失效频率。
+
+## 更新历史
+
+- **0.1.14** —— 修复 "session.events is not iterable"(每轮运行失败):书签扫描误用了 `session.events`(会话对象上不存在的属性,公共接口是 `session.snapshotEvents()`)。书签现移入投影状态(派生、每事件 O(1)、可持久化),判定全程有防护,内部错误不再拖垮整轮。注入时机精确:开启开始注入时,注入发生在会话第 1、1+interval、1+2·interval… 次调用;关闭时在第 interval、2·interval、3·interval… 次调用(不再 ±1 漂移)。默认触发轮次从 80 调整为 50。
 
 ## 故障排查
 

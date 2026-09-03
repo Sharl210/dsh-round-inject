@@ -3,7 +3,8 @@
  *
  * Renders one settings page ("提示词注入") inside the Settings panel with:
  *   - an enabled switch,
- *   - the injection interval (rounds between two injections, default 80),
+ *   - the injection interval (completed model calls between two injections,
+ *     default 50),
  *   - the conversation-start prompt (first input box, injected once at the
  *     start of a new conversation),
  *   - the periodic prompt (second input box, injected every N model calls),
@@ -37,7 +38,7 @@ window.__ModuleLoader__.load({
      */
     const DEFAULTS = Object.freeze({
       enabled: true,
-      interval: 80,
+      interval: 50,
       startPrompt: '',
       prompt: '',
       injectOnStart: true,
@@ -201,7 +202,7 @@ window.__ModuleLoader__.load({
         }),
         h(Row, {
           label: '触发轮次',
-          hint: '每多少次模型调用注入一次(对话轮与工具调用轮都计一次),默认 80。',
+          hint: '两次注入之间相隔的模型调用步数（对话轮与工具调用轮都计一次），默认 50：距上次注入满 N 步后的那一次模型调用会被注入；若关闭"对话开始时注入"，则第 N、2N、3N… 次调用被注入。',
           children: h('input', {
             type: 'number',
             min: 1,

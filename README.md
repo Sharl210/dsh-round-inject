@@ -7,16 +7,16 @@ Every N model invocations — **conversation turns and tool-call steps each coun
 | | |
 | --- | --- |
 | Host | `agent/pre-step` waterfall (counts every entering step, appends the injected message to that step's request) |
-| Client | one Settings page with an input box + round interval (default **80**) |
+| Client | one Settings page with two prompt boxes + round interval (default **50**) |
 | Config | `round-inject` settings namespace, persisted by the DSH settings provider |
 
 ## Features
 
 - **Round counting** — every model invocation counts once, including steps triggered by tool results (a tool call is followed by another model call = another step). Counting rides the durable `sessionProjections` seam (the same mechanism the built-in "N 轮 · M 步" stats line uses): the counter is a persisted projection per session, so **compaction, paging, session resume and host restarts cannot reset it**.
-- **Periodic injection** — when the durable counter reaches the configured interval (default **80**), the periodic prompt is appended to that step's messages. The injected message carries `source: { kind: 'plugin', plugin: 'round-inject' }`, is persisted to the session log, and is visible to the model.
+- **Periodic injection** — when exactly `interval` completed model calls have elapsed since the previous injection, the periodic prompt is appended to that step's messages (default interval **50**) — with the start prompt on, injected calls sit at steps 1, 1+interval, 1+2·interval, …; without one, at interval, 2·interval, 3·interval, …. The injected message carries `source: { kind: 'plugin', plugin: 'round-inject' }`, is persisted to the session log, and is visible to the model.
 - **Two independent prompts** — the conversation-start prompt (first input box) and the periodic prompt (second input box) are separate: the start injection uses only the start prompt, the periodic injection uses only the periodic prompt. Either can be left empty to disable that side.
-- **Inject at conversation start** — when enabled and the start prompt is non-empty, each new conversation injects the start prompt once (does not consume a round), then the interval restarts.
-- **Settings UI with Save button** — Settings → **提示词注入**: enable switch, interval (number input, default 80), conversation-start prompt (first textarea), periodic prompt (second textarea), and an "inject at conversation start" switch. All edits are draft-only; a **Save** button (bottom-right) commits the whole form to the settings namespace at once. Nothing is written until the user clicks Save. IME composition is protected (Chinese input never pollutes the form).
+- **Inject at conversation start** — when enabled and the start prompt is non-empty, the very first model call of each conversation carries the start prompt; the periodic counter then restarts from that call.
+- **Settings UI with Save button** — Settings → **提示词注入**: enable switch, interval (number input, default 50), conversation-start prompt (first textarea), periodic prompt (second textarea), and an "inject at conversation start" switch. All edits are draft-only; a **Save** button (bottom-right) commits the whole form to the settings namespace at once. Nothing is written until the user clicks Save. IME composition is protected (Chinese input never pollutes the form).
 - **Safe by default** — empty prompt ⇒ nothing is injected; disabled ⇒ no counting and no injection; a step that does not actually call the model is never counted.
 
 ## Install
@@ -38,7 +38,7 @@ The composition row (also the settings namespace base layer):
   name: 'dsh-round-inject'
   config:
     enabled: true        # master switch
-    interval: 80         # model invocations between two injections
+    interval: 50         # model invocations between two injections
     prompt: ''           # injected prompt text (empty ⇒ no injection)
     injectOnStart: true  # inject once at conversation start
 ```
@@ -47,36 +47,54 @@ All values can be changed live from Settings → 提示词注入 without a resta
 
 ## How it works
 
-The plugin uses two halves that share one durable counter:
+The host registers ONE durable fold on the `sessionProjections` seam and acts
+on it from the `agent/pre-step` waterfall:
 
-1. **Durable counting (projection)** — the plugin registers a `round-inject`
-   projection on the `sessionProjections` seam. The projection is a pure fold
-   over the session event stream: every `step/end` (one completed model call,
-   the same event the built-in "N 轮 · M 步" line counts) increments
-   `totalSteps`. The registry checkpoints the state into
-   `<root>/session_projcache.json`, so the count survives compaction, paging,
-   session resume and host restarts — this is what makes the interval
-   reliable over long agent runs (the 0.1.8 and earlier in-memory WeakMap
-   counter could be silently reset by a compact/resume, causing "injected
-   only once").
+1. **One fold for counting AND the bookmark** — the `round-inject` projection
+   is a pure fold over the session event stream. It consumes only built-in
+   events — no custom event type is ever appended, so restoring a session can
+   never fail on this plugin's vocabulary:
+   - every `step/end` (one completed model call, the same event the built-in
+     "N 轮 · M 步" line counts) increments `totalSteps` and — once the session
+     has injected — `sinceInject`, the completed calls since the last
+     injected message;
+   - an injected `user/message` (identifiable by its `source:
+     {kind:'plugin', plugin:'round-inject'}` marker, which the plugin stamps
+     when appending) records `lastInjectSeq` and resets `sinceInject` to 0.
+   The registry checkpoints the state into `<root>/session_projcache/`, so
+   the count and the bookmark survive compaction, paging, session resume and
+   host restarts. Keeping the bookmark in this derived state (instead of the
+   settings namespace, which leaked across sessions in 0.1.11, or scanning
+   `session.events`, which does not exist and crashed every turn in 0.1.13)
+   makes the interval exact: one O(1) fold per event, never a per-step
+   full-log scan.
 2. **Injection (side effect)** — the plugin listens to the `agent/pre-step`
    waterfall (one event per proposed step). After `next()` yields the loop's
    own decision, it:
    - ignores `reject` decisions and steps with an empty message set (those never call the model);
    - reads the latest config from the `round-inject` namespace;
-   - reads the projected `totalSteps` and compares it against the last
-     injected step number, which is persisted as `lastInjectStep` in the
-     settings namespace (hidden from the UI form);
-   - on conversation start (`lastInjectStep` unset) injects once when
-     `injectOnStart` is on and records the current step as the bookmark;
-   - otherwise, when `totalSteps - lastInjectStep >= interval`, appends
-     `createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'plugin', plugin: 'round-inject' } })` to the step's messages and advances the bookmark.
+   - reads the projected state (`totalSteps`, `sinceInject`, `lastInjectSeq`)
+     and decides:
+     - never injected yet + start prompt enabled → append the start prompt to
+       the very first model call;
+     - never injected yet + no start prompt → append the periodic prompt to
+       the `interval`-th model call of the session;
+     - otherwise `sinceInject >= interval` → append the periodic prompt to
+       the next model call, exactly `interval` completed calls after the
+       previous injection;
+   - the whole decision is guarded: on any unexpected error it logs a warning
+     and lets the step proceed uninjected, so the plugin can never take down
+     an agent turn.
+   The injected message is appended as
+   `createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'plugin', plugin: 'round-inject' } })`
+   and becomes part of the step's durable user messages — model-visible,
+   audit-able in the session log, and it works with any model route.
 
 Because the injected message becomes part of the step's durable user messages, it is model-visible, audit-able in the session log, and works with any model route.
 
 ### KV cache note
 
-An injection changes the request content at the injected step, so provider KV/prefix cache is invalidated from that request onward for one turn's worth of steps. With the default interval of 80 this is negligible; lowering the interval increases invalidation frequency.
+An injection changes the request content at the injected step, so provider KV/prefix cache is invalidated from that request onward for one turn's worth of steps. With the default interval of 50 this is negligible; lowering the interval increases invalidation frequency.
 
 ### IME input: pinyin/kana never pollute settings, Chinese typing works (0.1.8)
 
@@ -99,6 +117,18 @@ Version history:
 - 0.1.8 (current) fixes this with the local-draft approach above.
 
 Related upstream DSH issue (chat composer): clicking the Send button while composing submitted the uncommitted pinyin — the Enter path already guarded, the button path did not. See `docs/dsh-composer-ime-patch.md` for the one-line upstream patch.
+
+## Changelog
+
+- **0.1.14** — fix "session.events is not iterable" (per-step turn failure):
+  the bookmark scan used `session.events`, which is not an API of the session
+  object (the public surface is `session.snapshotEvents()`). The bookmark now
+  lives in the projection state (derived, O(1) per event, durable) and the
+  decision is guarded, so an internal error can no longer kill a turn.
+  Injection timing is exact: with the start prompt on, injected calls are the
+  session's 1st, 1+interval-th, 1+2·interval-th, …; with it off, the
+  interval-th, 2·interval-th, … (no more ±1 drift). Default interval lowered
+  from 80 to 50.
 
 ## Troubleshooting
 
