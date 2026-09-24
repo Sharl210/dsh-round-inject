@@ -7,8 +7,8 @@
 | | |
 | --- | --- |
 | Host | `agent/pre-step` 瀑布(统计每个真正进入的 step,并把注入消息追加到该 step 的请求) |
-| Client | 设置面板:两个输入框 + 触发轮次(默认 **50**) |
-| 配置 | `round-inject` 设置命名空间,由 DSH 设置提供方持久化 |
+| Client | 无 —— DSH 0.1.7 依据插件的 volatile Config 字段自动生成设置页 |
+| 配置 | 插件条目自身的 Config(live `volatile()` 字段),在自动生成的设置页中编辑 |
 
 ## 功能
 
@@ -54,7 +54,7 @@ dsh plugin --profile web add dsh-round-inject
    注册表把状态检查点到 `<root>/session_projcache/`,因此计数与书签都扛得住压缩、翻页、会话恢复与宿主重启。书签放在这份**派生状态**里(而不是 0.1.11 会跨会话泄漏的设置命名空间,也不是 0.1.13 中不存在的 `session.events` —— 后者让每一步都崩溃),使间隔**精确**:每个事件 O(1) 折叠,绝不每步全量扫描日志。
 2. **注入(副作用)** —— 监听 `agent/pre-step` 瀑布(每个拟议 step 一次)。在 `next()` 返回 loop 自身决策后:
    - 忽略 `reject` 决策与空消息 step(这些不会调用模型);
-   - 从 `round-inject` 命名空间读取最新配置;
+   - 通过 live `volatile()` 引用读取最新配置;
    - 读取投影状态(`totalSteps` / `sinceInject` / `lastInjectSeq`)并判定:
      - 本会话从未注入且开启开始注入 → 把开始提示词追加到**第一次**模型调用;
      - 从未注入且无开始提示词 → 把周期提示词追加到会话第 `interval` 次调用;
@@ -68,6 +68,7 @@ dsh plugin --profile web add dsh-round-inject
 
 ## 更新历史
 
+- **0.1.15** —— 适配 DSH **0.1.7-rc.1**。0.1.7 已移除 `settings.register()` / `settingsScope`:插件改为把 Config 字段声明为 `.volatile()`(以 `.get()` 读取的实时引用),设置页由框架自动派生,改动即时生效、无需重载插件。已删除过时的 `client.js`(它注入的 `settingsScope` 服务在新版已不存在,这正是设置项完全不显示的原因)。投影注册改为直连 `ctx.sessionProjections.register`,与内置 fold 一致。注入行为不变:第一次模型调用带开始提示词,此后恰好每隔 `interval` 个已完成步注入一次。
 - **0.1.14** —— 修复 "session.events is not iterable"(每轮运行失败):书签扫描误用了 `session.events`(会话对象上不存在的属性,公共接口是 `session.snapshotEvents()`)。书签现移入投影状态(派生、每事件 O(1)、可持久化),判定全程有防护,内部错误不再拖垮整轮。注入时机精确:开启开始注入时,注入发生在会话第 1、1+interval、1+2·interval… 次调用;关闭时在第 interval、2·interval、3·interval… 次调用(不再 ±1 漂移)。默认触发轮次从 80 调整为 50。
 
 ## 故障排查

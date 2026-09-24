@@ -7,8 +7,8 @@ Every N model invocations — **conversation turns and tool-call steps each coun
 | | |
 | --- | --- |
 | Host | `agent/pre-step` waterfall (counts every entering step, appends the injected message to that step's request) |
-| Client | one Settings page with two prompt boxes + round interval (default **50**) |
-| Config | `round-inject` settings namespace, persisted by the DSH settings provider |
+| Client | none — DSH 0.1.7 derives the Settings page from the plugin's volatile Config fields |
+| Config | the plugin entry's Config (live `volatile()` fields), edited on the auto-generated Settings page |
 
 ## Features
 
@@ -63,7 +63,7 @@ on it from the `agent/pre-step` waterfall:
      when appending) records `lastInjectSeq` and resets `sinceInject` to 0.
    The registry checkpoints the state into `<root>/session_projcache/`, so
    the count and the bookmark survive compaction, paging, session resume and
-   host restarts. Keeping the bookmark in this derived state (instead of the
+   host restarts. Keeping the bookmark in this derived state (instead of a
    settings namespace, which leaked across sessions in 0.1.11, or scanning
    `session.events`, which does not exist and crashed every turn in 0.1.13)
    makes the interval exact: one O(1) fold per event, never a per-step
@@ -72,7 +72,7 @@ on it from the `agent/pre-step` waterfall:
    waterfall (one event per proposed step). After `next()` yields the loop's
    own decision, it:
    - ignores `reject` decisions and steps with an empty message set (those never call the model);
-   - reads the latest config from the `round-inject` namespace;
+   - reads the latest config through the live `volatile()` references;
    - reads the projected state (`totalSteps`, `sinceInject`, `lastInjectSeq`)
      and decides:
      - never injected yet + start prompt enabled → append the start prompt to
@@ -120,6 +120,15 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
 
 ## Changelog
 
+- **0.1.15** — port to DSH **0.1.7-rc.1**. `settings.register()` / `settingsScope`
+  are gone in 0.1.7; the plugin now declares its Config fields `.volatile()`
+  (live references read with `.get()`), so the framework derives the Settings
+  page itself and edits apply without re-loading the plugin. The obsolete
+  `client.js` half was removed (it injected the deleted `settingsScope`
+  service, which is why no settings section appeared at all). The projection
+  registry is now used directly (`ctx.sessionProjections.register`), matching
+  the built-in folds. Injection behaviour is unchanged: start prompt on the
+  first model call, then exactly `interval` completed steps later.
 - **0.1.14** — fix "session.events is not iterable" (per-step turn failure):
   the bookmark scan used `session.events`, which is not an API of the session
   object (the public surface is `session.snapshotEvents()`). The bookmark now

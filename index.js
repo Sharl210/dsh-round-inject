@@ -50,7 +50,7 @@ export const name = 'round-inject'
 /** Composition entry config; also the settings namespace base layer. */
 export const Config = z.object({
   /** Master switch: when false the plugin counts nothing and injects nothing. */
-  enabled: z.boolean().default(true),
+  enabled: z.boolean().default(true).volatile(),
   /**
    * How many completed model calls between two injections (conversation turns
    * and tool-call steps both count, exactly like the built-in "steps"
@@ -58,22 +58,22 @@ export const Config = z.object({
    * call and the periodic counter starts from that call; without one the
    * periodic prompt first rides the `interval`-th call.
    */
-  interval: z.number().step(1).min(1).max(100000).default(50),
+  interval: z.number().step(1).min(1).max(100000).default(50).volatile(),
   /**
    * Periodic prompt: injected every `interval` model invocations (the second
    * input box). Empty ⇒ periodic injection is disabled (only the
    * conversation-start prompt, if any, is used).
    */
-  prompt: z.string().default(''),
+  prompt: z.string().default('').volatile(),
   /**
    * Conversation-start prompt: injected once at the start of a new
    * conversation (the first input box). Empty ⇒ no start injection.
    * Independent from `prompt`: the start injection uses ONLY this text, the
    * periodic injection uses ONLY `prompt`.
    */
-  startPrompt: z.string().default(''),
+  startPrompt: z.string().default('').volatile(),
   /** Whether the conversation-start injection happens at all. */
-  injectOnStart: z.boolean().default(true),
+  injectOnStart: z.boolean().default(true).volatile(),
 })
 
 /** The `{kind:'plugin'}` source stamped on every injected message. */
@@ -129,17 +129,26 @@ const projectionDefinition = {
 }
 
 export function apply(ctx, config) {
-  let readConfig = () => config ?? {}
-  ctx.inject(['settings'], (sctx) => {
-    const scope = sctx.settings.register('round-inject', Config, { base: config })
-    readConfig = () => scope.get() ?? {}
+  // Config fields are declared `.volatile()`, so each one parses into a stable
+  // reference read with `.get()`: DSH 0.1.7's settings document updates the
+  // reference in place, giving live edits without re-applying the plugin. The
+  // framework also derives the settings page from these fields
+  // (`ctx.settings.describe` projects every volatile field of a live entry), so
+  // the plugin registers no settings namespace of its own — the old
+  // `settings.register()`/`settingsScope` pair no longer exists in 0.1.7.
+  const readConfig = () => ({
+    enabled: config?.enabled?.get?.() ?? config?.enabled ?? true,
+    interval: config?.interval?.get?.() ?? config?.interval ?? 50,
+    prompt: config?.prompt?.get?.() ?? config?.prompt ?? '',
+    startPrompt: config?.startPrompt?.get?.() ?? config?.startPrompt ?? '',
+    injectOnStart: config?.injectOnStart?.get?.() ?? config?.injectOnStart ?? true,
   })
 
-  let projections = null
-  ctx.inject(['sessionProjections'], (sctx) => {
-    projections = sctx.sessionProjections
-    sctx.sessionProjections.register(projectionDefinition)
-  })
+  // The projection registry is a plain service in 0.1.7 (registered directly on
+  // the context, exactly like the built-in agent-loop/agent-preset folds), so
+  // no `ctx.inject(['sessionProjections'])` indirection is needed. Registering
+  // it is an effect of this plugin's fiber: unloading removes the key.
+  ctx.effect(() => ctx.sessionProjections.register(projectionDefinition), 'round-inject: projection')
 
   // ── injection ────────────────────────────────────────────────────────────
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
@@ -200,8 +209,8 @@ export function apply(ctx, config) {
    * the session object (0.1.13 crashed on it).
    */
   function readProjectionState(session) {
-    if (projections !== null && session !== undefined) {
-      const state = projections.stateOf(session, 'round-inject')
+    if (session !== undefined) {
+      const state = ctx.sessionProjections?.stateOf(session, 'round-inject')
       if (state !== undefined) return state
     }
     if (session === undefined || typeof session.snapshotEvents !== 'function') {
