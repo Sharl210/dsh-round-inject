@@ -7,7 +7,7 @@
 | | |
 | --- | --- |
 | Host | `agent/pre-step` 瀑布(统计每个真正进入的 step,并把注入消息追加到该 step 的请求) |
-| Client | 无 —— DSH 0.1.7 依据插件的 volatile Config 字段自动生成设置页 |
+| Client | 一个设置页（`settings.section`），通过 `configForms` 读写本条目 Config。DSH 0.1.7 会依据 volatile Config 字段派生**表单数据**，但并未随附任何会为其渲染页面的客户端（`autoGenerate` 是给未来客户端预留的），因此仍需自行提供页面 |
 | 配置 | 插件条目自身的 Config(live `volatile()` 字段),在自动生成的设置页中编辑 |
 
 ## 功能
@@ -69,7 +69,9 @@ dsh plugin --profile web add dsh-round-inject
 
 ## 更新历史
 
-- **0.1.15** —— 适配 DSH **0.1.7-rc.1**。0.1.7 已移除 `settings.register()` / `settingsScope`:插件改为把 Config 字段声明为 `.volatile()`(以 `.get()` 读取的实时引用),设置页由框架自动派生,改动即时生效、无需重载插件。已删除过时的 `client.js`(它注入的 `settingsScope` 服务在新版已不存在,这正是设置项完全不显示的原因)。投影注册改为直连 `ctx.sessionProjections.register`,与内置 fold 一致。注入行为不变:第一次模型调用带开始提示词,此后恰好每隔 `interval` 个已完成步注入一次。
+- **0.1.21** —— 恢复 0.1.7 下的配置页。0.1.15 适配时误以为「0.1.7 会依据 volatile Config 字段渲染页面」而删掉了客户端半端；事实并非如此 —— `dsh-settings` 文档明确写着 `autoGenerate` 只是给「依据 schema 生成页面的客户端」预留的标记,且「目前没有任何随附客户端会这样做」。页面已恢复:注册到 `settings.section` 与 Plugins 页的 `plugins.row.config` 槽(键 `dsh-round-inject#round-inject`),通过 `ctx.configForms.get('round-inject')` 读写,并用共享的 `SettingsForm` 组件渲染。host 半端在可选的 `ctx.inject(['settings'], …)` 子上下文中声明 `configure({ auto: false })`,因此在没有 Settings 的部署里插件照常加载。同时补上 `inject = ['sessionProjections']`(Cordis 会拒绝未声明的服务读取)。
+- **0.1.17** —— 修复 0.1.15 适配引入的挂载失败:`cannot get property "sessionProjections" without inject`。Cordis 对服务访问有守卫,从 `ctx` 读取服务必须先声明 —— 插件现导出 `inject = ['sessionProjections']`(内置 fold 也是同样声明)。已在启用守卫的真实 cordis Context 下挂载验证通过。
+- **0.1.15** —— 适配 DSH **0.1.7-rc.1**。0.1.7 已移除 `settings.register()` / `settingsScope`:插件改为把 Config 字段声明为 `.volatile()`(以 `.get()` 读取的实时引用),配置改动即时生效、无需重载插件。此版本误删了 `client.js`(当时以为 0.1.7 会依据这些字段自动渲染页面;实际不会),0.1.21 已恢复。投影注册改为直连 `ctx.sessionProjections.register`,与内置 fold 一致。注入行为不变:第一次模型调用带开始提示词,此后恰好每隔 `interval` 个已完成步注入一次。
 - **0.1.14** —— 修复 "session.events is not iterable"(每轮运行失败):书签扫描误用了 `session.events`(会话对象上不存在的属性,公共接口是 `session.snapshotEvents()`)。书签现移入投影状态(派生、每事件 O(1)、可持久化),判定全程有防护,内部错误不再拖垮整轮。注入时机精确:开启开始注入时,注入发生在会话第 1、1+interval、1+2·interval… 次调用;关闭时在第 interval、2·interval、3·interval… 次调用(不再 ±1 漂移)。默认触发轮次从 80 调整为 50。
 
 ## 故障排查

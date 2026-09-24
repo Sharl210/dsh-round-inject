@@ -141,16 +141,28 @@ export function apply(ctx, config) {
   // Config fields are declared `.volatile()`, so each one parses into a stable
   // reference read with `.get()`: DSH 0.1.7's settings document updates the
   // reference in place, giving live edits without re-applying the plugin. The
-  // framework also derives the settings page from these fields
-  // (`ctx.settings.describe` projects every volatile field of a live entry), so
-  // the plugin registers no settings namespace of its own — the old
-  // `settings.register()`/`settingsScope` pair no longer exists in 0.1.7.
+  // old `settings.register()` / `settingsScope` pair no longer exists, and the
+  // plugin registers no settings namespace of its own — the framework projects
+  // every volatile field of a live entry into a form, read by entry id.
   const readConfig = () => ({
     enabled: config?.enabled?.get?.() ?? config?.enabled ?? true,
     interval: config?.interval?.get?.() ?? config?.interval ?? 50,
     prompt: config?.prompt?.get?.() ?? config?.prompt ?? '',
     startPrompt: config?.startPrompt?.get?.() ?? config?.startPrompt ?? '',
     injectOnStart: config?.injectOnStart?.get?.() ?? config?.injectOnStart ?? true,
+  })
+
+  // This plugin ships its own page (the browser half), so it opts out of the
+  // schema-generated page policy. `autoGenerate` defaults to true for clients
+  // that build pages from the schema, but none ships yet, so the policy is
+  // declared explicitly and the page itself handles `auto`-less deployments:
+  // the registration is wrapped in an optional Settings child so the plugin
+  // still runs when Settings is absent.
+  ctx.inject(['settings'], (sctx) => {
+    sctx.effect(
+      () => sctx.settings.configure({ auto: false }, sctx.fiber),
+      'round-inject: page policy',
+    )
   })
 
   // The projection registry is a plain service in 0.1.7, used exactly like the

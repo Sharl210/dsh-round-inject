@@ -1,6 +1,6 @@
 {
   "name": "dsh-round-inject",
-  "version": "0.1.18",
+  "version": "0.1.21",
   "description": "Periodic prompt injection for the DeepSeek Harness Web GUI: every N model invocations (conversation turns and tool-call steps both count) the plugin injects a user-configured prompt as a model-visible user message; the first injection happens at conversation start.",
   "keywords": [
     "dsh",
@@ -17,10 +17,12 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -29,6 +31,15 @@
   "dsh": {
     "bundle": {
       "patch": "cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
   },
   "peerDependencies": {

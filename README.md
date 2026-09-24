@@ -7,7 +7,7 @@ Every N model invocations — **conversation turns and tool-call steps each coun
 | | |
 | --- | --- |
 | Host | `agent/pre-step` waterfall (counts every entering step, appends the injected message to that step's request) |
-| Client | none — DSH 0.1.7 derives the Settings page from the plugin's volatile Config fields |
+| Client | one Settings page (`settings.section`) that edits the entry's Config through `configForms`. DSH 0.1.7 derives the *form data* from volatile Config fields but ships no client that renders a page for them (`autoGenerate` exists for future clients), so a page is still required |
 | Config | the plugin entry's Config (live `volatile()` fields), edited on the auto-generated Settings page |
 
 ## Features
@@ -120,6 +120,17 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
 
 ## Changelog
 
+- **0.1.21** — restore the configuration page for 0.1.7. The 0.1.15 port dropped
+  the browser half on the assumption that 0.1.7 renders pages from volatile
+  Config fields; it does not — `dsh-settings` documents `autoGenerate` as a
+  marker "for clients that build pages from the schema; no shipped client does
+  so yet". The page is back, registered into `settings.section` and into the
+  Plugins page's `plugins.row.config` slot (`dsh-round-inject#round-inject`),
+  reading values through `ctx.configForms.get('round-inject')` and rendering
+  the shared `SettingsForm` primitives. The host half declares
+  `configure({ auto: false })` inside an optional `ctx.inject(['settings'], …)`
+  child, so the plugin still loads where Settings is absent. It also declares
+  `inject = ['sessionProjections']` (Cordis rejects undeclared service reads).
 - **0.1.17** — fix the mount failure introduced by the 0.1.15 port:
   `cannot get property "sessionProjections" without inject`. Cordis guards
   service access, so reading a service off `ctx` requires declaring it — the
@@ -128,10 +139,9 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
   cordis Context with the guard active.
 - **0.1.15** — port to DSH **0.1.7-rc.1**. `settings.register()` / `settingsScope`
   are gone in 0.1.7; the plugin now declares its Config fields `.volatile()`
-  (live references read with `.get()`), so the framework derives the Settings
-  page itself and edits apply without re-loading the plugin. The obsolete
-  `client.js` half was removed (it injected the deleted `settingsScope`
-  service, which is why no settings section appeared at all). The projection
+  (live references read with `.get()`), so edits apply without re-loading the
+  plugin. The obsolete `client.js` half was removed in this release — wrongly,
+  since 0.1.7 renders no page from those fields; 0.1.21 restores it. The projection
   registry is now used directly (`ctx.sessionProjections.register`), matching
   the built-in folds. Injection behaviour is unchanged: start prompt on the
   first model call, then exactly `interval` completed steps later.
