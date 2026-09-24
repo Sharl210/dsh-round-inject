@@ -69,6 +69,7 @@ dsh plugin --profile web add dsh-round-inject
 
 ## 更新历史
 
+- **0.1.24** —— 修复 0.1.22 之后仍存在的「该插件当前未加载」提示。页面背后的投影漏掉了 `available` 字段,而共享框架只要看到该字段为假就渲染未加载提示 —— 于是即使 `whileServed` 已命中、表单快照本身已是 ready,界面仍把已加载的插件报成缺失。现在 `available` 与其他 shell 字段一起进入投影,且客户端测试会断言 `SettingsFormShell` 的每个字段都已发布,防止再次遗漏。
 - **0.1.22** —— 修复恢复页面后暴露的两个缺陷:侧栏标签显示成原始键 `nav`(字典里只写了 `description`,`t('nav')` 查不到就回退成键名),以及正文显示「该插件当前未加载」(`SettingsFormModel` 在 Host 的 describe 镜像收录该条目之前一律报 `available: false`,所以无条件注册会在插件已加载时也显示这句提示)。字典已补上标签键,页面改为通过 `configForms.whileServed(['round-inject'])` 注册,与官方所有配置页一致 —— 条目被服务时出现,且此时必定报为可用。
 - **0.1.21** —— 恢复 0.1.7 下的配置页。0.1.15 适配时误以为「0.1.7 会依据 volatile Config 字段渲染页面」而删掉了客户端半端；事实并非如此 —— `dsh-settings` 文档明确写着 `autoGenerate` 只是给「依据 schema 生成页面的客户端」预留的标记,且「目前没有任何随附客户端会这样做」。页面已恢复:注册到 `settings.section` 与 Plugins 页的 `plugins.row.config` 槽(键 `dsh-round-inject#round-inject`),通过 `ctx.configForms.get('round-inject')` 读写,并用共享的 `SettingsForm` 组件渲染。host 半端在可选的 `ctx.inject(['settings'], …)` 子上下文中声明 `configure({ auto: false })`,因此在没有 Settings 的部署里插件照常加载。同时补上 `inject = ['sessionProjections']`(Cordis 会拒绝未声明的服务读取)。
 - **0.1.17** —— 修复 0.1.15 适配引入的挂载失败:`cannot get property "sessionProjections" without inject`。Cordis 对服务访问有守卫,从 `ctx` 读取服务必须先声明 —— 插件现导出 `inject = ['sessionProjections']`(内置 fold 也是同样声明)。已在启用守卫的真实 cordis Context 下挂载验证通过。

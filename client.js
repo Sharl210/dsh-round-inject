@@ -265,6 +265,10 @@ window.__ModuleLoader__.load({
       const store = model.bind(() => {
         const shell = model.shell()
         return {
+          // `available` must ride the projection: the shared frame renders its
+          // "not loaded" notice whenever this is falsy, so leaving it out makes
+          // a perfectly loaded plugin look absent.
+          available: shell.available,
           writable: shell.writable,
           dirty: shell.dirty,
           invalid: shell.invalid,

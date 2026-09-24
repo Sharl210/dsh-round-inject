@@ -120,6 +120,13 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
 
 ## Changelog
 
+- **0.1.24** — fix the "this plugin is not loaded" notice that survived 0.1.22.
+  The published projection behind the page omitted `available`, so the shared
+  frame — which renders its unavailable notice whenever that field is falsy —
+  reported a loaded plugin as absent even though `whileServed` had matched and
+  the form's own snapshot said ready. `available` now rides the projection
+  alongside the other shell fields, and the client test asserts every
+  `SettingsFormShell` field is published, so the omission cannot come back.
 - **0.1.22** — fix the two defects the restored page showed: the sidebar entry was
   labelled with the raw key `nav` (the dictionaries only carried `description`,
   so `t('nav')` fell back to the key) and the page body read "this plugin is not
