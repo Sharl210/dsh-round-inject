@@ -35,6 +35,7 @@ window.__ModuleLoader__.load({
     const FIELDS = ['enabled', 'interval', 'startPrompt', 'injectOnStart', 'prompt']
 
     const en = {
+      nav: 'Prompt injection',
       description: 'Re-inject a prompt every N model invocations. Conversation turns and tool-call steps both count.',
       enabled: 'Enable injection',
       enabledHint: 'Turn injection off without uninstalling the plugin.',
@@ -62,6 +63,7 @@ window.__ModuleLoader__.load({
     }
 
     const zh = {
+      nav: '提示词注入',
       description: '每 N 次模型调用注入一次提示词。对话轮与工具调用轮都各计一次。',
       enabled: '启用注入',
       enabledHint: '无需卸载即可关闭注入。',
@@ -276,31 +278,40 @@ window.__ModuleLoader__.load({
 
       const face = () => ({ hooks: { roundInjectForm: store }, ...actions, t })
 
-      // Registered directly, the way the shipped third-party pages do it: the
-      // Host serves this entry's Config for the profile's whole lifetime, so
-      // there is no window to guard with a while-served watch, and a direct
-      // registration cannot silently fail to appear.
-      ctx.slots.inject('settings.section', () =>
-        ctx.slots.register(
-          {
-            name: 'settings.section',
-            id: 'round-inject',
-            order: 30,
-            label: () => t('nav'),
-            locale: NS,
-            inject: face,
-          },
-          RoundInjectRowConfig,
-        ),
-      )
-
-      // The row's own configuration page on the Plugins page, so the same form
-      // is reachable from the bundle's row as well.
-      ctx.slots.inject('plugins.row.config', () =>
-        ctx.slots.register(
-          { name: 'plugins.row.config', key: `${BUNDLE}#${ROW_ID}`, locale: NS, inject: face },
-          RoundInjectRowConfig,
-        ),
+      // Registered through whileServed, like every shipped configuration page:
+      // the form reports `available: false` until the Host's describe mirror
+      // carries this entry, so registering unconditionally shows the "not
+      // loaded" notice on a perfectly loaded plugin.
+      ctx.effect(
+        () =>
+          ctx.configForms.whileServed([ENTRY_ID], () => {
+            const offSection = ctx.slots.inject('settings.section', () =>
+              ctx.slots.register(
+                {
+                  name: 'settings.section',
+                  id: 'round-inject',
+                  order: 30,
+                  label: () => t('nav'),
+                  locale: NS,
+                  inject: face,
+                },
+                RoundInjectRowConfig,
+              ),
+            )
+            // The row's own configuration page on the Plugins page, so the same
+            // form is reachable from the bundle's row as well.
+            const offRow = ctx.slots.inject('plugins.row.config', () =>
+              ctx.slots.register(
+                { name: 'plugins.row.config', key: `${BUNDLE}#${ROW_ID}`, locale: NS, inject: face },
+                RoundInjectRowConfig,
+              ),
+            )
+            return () => {
+              offRow()
+              offSection()
+            }
+          }),
+        'round-inject: configuration page',
       )
     }
 

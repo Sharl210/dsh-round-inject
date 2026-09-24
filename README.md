@@ -120,6 +120,15 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
 
 ## Changelog
 
+- **0.1.22** — fix the two defects the restored page showed: the sidebar entry was
+  labelled with the raw key `nav` (the dictionaries only carried `description`,
+  so `t('nav')` fell back to the key) and the page body read "this plugin is not
+  loaded" (`SettingsFormModel` reports `available: false` until the Host's
+  describe mirror carries the entry, so registering unconditionally shows the
+  notice on a loaded plugin). The dictionaries now define the label, and the
+  page is registered through `configForms.whileServed(['round-inject'])` like
+  every shipped configuration page — it appears exactly when the entry is
+  served, and then always reports available.
 - **0.1.21** — restore the configuration page for 0.1.7. The 0.1.15 port dropped
   the browser half on the assumption that 0.1.7 renders pages from volatile
   Config fields; it does not — `dsh-settings` documents `autoGenerate` as a
