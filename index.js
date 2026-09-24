@@ -85,13 +85,26 @@ export const Config = z.object({
   injectOnStart: z.boolean().default(true).volatile(),
 })
 
-/** The `{kind:'plugin'}` source stamped on every injected message. */
-const PLUGIN_SOURCE = Object.freeze({ kind: 'plugin', plugin: 'round-inject' })
+/** The producer kind stamped on every injected message. */
+const PRODUCER_KIND = 'plugin:round-inject'
+
+/**
+ * Source stamped on every injected message. DSH's session format v4 requires a
+ * producer-owned kind: the released `{ kind: 'plugin', plugin: '<name>' }`
+ * wrapper is refused outright ("format v4 message requires a producer-owned
+ * source kind"), and the framework's own converter maps a third-party plugin
+ * name to `plugin:<name>` — so the flat kind is both the accepted spelling and
+ * the one old sessions are rewritten to.
+ */
+const PLUGIN_SOURCE = Object.freeze({ kind: PRODUCER_KIND })
 
 /** True when an event is one of this plugin's own injected user messages. */
 function isInjectedMessage(event) {
   if (event.type !== 'user/message') return false
   const source = event.data?.source
+  if (source?.kind === PRODUCER_KIND) return true
+  // Sessions written by earlier releases carry the retired wrapper; keep
+  // recognising them so an existing conversation's bookmark still folds.
   return source?.kind === 'plugin' && source?.plugin === 'round-inject'
 }
 

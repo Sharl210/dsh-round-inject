@@ -120,6 +120,20 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
 
 ## Changelog
 
+- **0.1.26** — two fixes. (1) **Injection crashed** with "failed format v4
+  message requires a producer-owned source kind": injected messages carried the
+  retired `{ kind: 'plugin', plugin: 'round-inject' }` wrapper, which the session
+  format v4 admission check refuses outright. They now carry the flat
+  producer kind `plugin:round-inject` — the same spelling the framework's own V3
+  converter produces for a third-party plugin — and the bookmark fold still
+  recognises the old wrapper so existing sessions keep counting. (2) The page
+  **restores the original layout**: the same five rows (enabled switch, trigger
+  interval, conversation-start prompt, periodic prompt, inject-at-start switch),
+  the same Chinese copy and hints, 3/6-row textareas, and the draft + Save
+  button behaviour. Only the data channel changed — it is bound to
+  `ctx.configForms.get('round-inject')`, whose snapshot carries the same
+  status/value/writable shape the page was written against, since
+  `settingsScope` no longer exists.
 - **0.1.24** — fix the "this plugin is not loaded" notice that survived 0.1.22.
   The published projection behind the page omitted `available`, so the shared
   frame — which renders its unavailable notice whenever that field is falsy —
