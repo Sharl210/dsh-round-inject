@@ -33,6 +33,7 @@ dsh plugin --profile web add dsh-round-inject
 组合行(同时也是设置命名空间的 base 层):
 
 ```yaml
+- **0.1.17** —— 修复 0.1.15 适配引入的挂载失败:`cannot get property "sessionProjections" without inject`。Cordis 对服务访问有守卫,从 `ctx` 读取服务必须先声明 —— 插件现导出 `inject = ['sessionProjections']`(内置 fold 也是同样声明)。已在启用守卫的真实 cordis Context 下挂载验证通过。
 - id: round-inject
   name: 'dsh-round-inject'
   config:

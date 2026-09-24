@@ -47,6 +47,15 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'round-inject'
 
+/**
+ * Services this plugin reads off the context. Cordis guards property access:
+ * reading `ctx.sessionProjections` without declaring it throws
+ * `cannot get property "sessionProjections" without inject` and the whole
+ * plugin fails to mount. The built-in folds declare it the same way
+ * (`dsh-agent-instructions`: `const inject = ["sessionProjections"]`).
+ */
+export const inject = ['sessionProjections']
+
 /** Composition entry config; also the settings namespace base layer. */
 export const Config = z.object({
   /** Master switch: when false the plugin counts nothing and injects nothing. */
@@ -144,11 +153,12 @@ export function apply(ctx, config) {
     injectOnStart: config?.injectOnStart?.get?.() ?? config?.injectOnStart ?? true,
   })
 
-  // The projection registry is a plain service in 0.1.7 (registered directly on
-  // the context, exactly like the built-in agent-loop/agent-preset folds), so
-  // no `ctx.inject(['sessionProjections'])` indirection is needed. Registering
-  // it is an effect of this plugin's fiber: unloading removes the key.
-  ctx.effect(() => ctx.sessionProjections.register(projectionDefinition), 'round-inject: projection')
+  // The projection registry is a plain service in 0.1.7, used exactly like the
+  // built-in folds (`ctx.sessionProjections.register(...)` in agent-loop and
+  // agent-preset-registry). Registration is itself an effect on this plugin's
+  // fiber, so unloading removes the key — no extra `ctx.effect` wrapper and no
+  // `ctx.inject(['sessionProjections'])` indirection.
+  ctx.sessionProjections.register(projectionDefinition)
 
   // ── injection ────────────────────────────────────────────────────────────
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
@@ -210,7 +220,7 @@ export function apply(ctx, config) {
    */
   function readProjectionState(session) {
     if (session !== undefined) {
-      const state = ctx.sessionProjections?.stateOf(session, 'round-inject')
+      const state = ctx.sessionProjections.stateOf(session, 'round-inject')
       if (state !== undefined) return state
     }
     if (session === undefined || typeof session.snapshotEvents !== 'function') {

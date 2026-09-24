@@ -120,6 +120,12 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
 
 ## Changelog
 
+- **0.1.17** — fix the mount failure introduced by the 0.1.15 port:
+  `cannot get property "sessionProjections" without inject`. Cordis guards
+  service access, so reading a service off `ctx` requires declaring it — the
+  plugin now exports `inject = ['sessionProjections']` (the built-in folds
+  declare it the same way). Verified by mounting the plugin under a real
+  cordis Context with the guard active.
 - **0.1.15** — port to DSH **0.1.7-rc.1**. `settings.register()` / `settingsScope`
   are gone in 0.1.7; the plugin now declares its Config fields `.volatile()`
   (live references read with `.get()`), so the framework derives the Settings
