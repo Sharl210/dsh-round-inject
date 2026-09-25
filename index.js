@@ -117,33 +117,54 @@ function isInjectedMessage(event) {
  *
  * State:
  *   - `totalSteps`    — completed model calls (`step/end` count), the GUI
- *                       "steps" figure.
+ *                       "steps" figure. Counted unconditionally: the
+ *                       counter must advance even before the first injection,
+ *                       which is what makes the first periodic injection land
+ *                       on the `interval`-th call.
  *   - `lastInjectSeq` — seq of the last injected user message; -1 = this
- *                       session has never injected. Set when an injected
- *                       message is folded (its seq lands between the
- *                       injected step's `step/start` and `step/end`).
- *   - `sinceInject`   — completed model calls after `lastInjectSeq`
- *                       (the injected step's own completion counts as 1, so
- *                       the next injection fires on the call exactly
- *                       `interval` steps after the previous one).
+ *                       session has never injected.
+ *   - `lastInjectStep`— `totalSteps` at the moment of the last injection; -1 =
+ *                       never. This is the scheduling origin for the periodic
+ *                       prompt, stored as a STEP COUNT rather than a boolean,
+ *                       so the interval arithmetic works from the very first
+ *                       call instead of only after an injection has happened.
+ *   - `sinceInject`   — completed model calls since `lastInjectStep`, i.e.
+ *                       `totalSteps - lastInjectStep` (maintained
+ *                       incrementally; kept as its own field because the
+ *                       checkpoint schema is additive).
  */
 const projectionDefinition = {
   key: 'round-inject',
-  stateVersion: 2,
-  init: () => ({ totalSteps: 0, lastInjectSeq: -1, sinceInject: 0 }),
+  stateVersion: 3,
+  init: () => ({ totalSteps: 0, lastInjectSeq: -1, lastInjectStep: -1, sinceInject: 0 }),
   apply: (state, event) => {
     switch (event.type) {
-      case 'step/end':
+      case 'step/end': {
+        const totalSteps = state.totalSteps + 1
         return {
-          totalSteps: state.totalSteps + 1,
+          totalSteps,
           lastInjectSeq: state.lastInjectSeq,
-          sinceInject: state.lastInjectSeq >= 0 ? state.sinceInject + 1 : state.sinceInject,
+          lastInjectStep: state.lastInjectStep,
+          // Distance from the origin, counted in completed steps. Before any
+          // injection the origin is -1 ("one step before the first call"), so
+          // this reads `totalSteps + 1` and the first periodic prompt rides
+          // the `interval`-th call; afterwards it is the plain distance from
+          // the last injection, keeping later injections exactly `interval`
+          // steps apart. One arithmetic, no special case, no stalling.
+          sinceInject: totalSteps - state.lastInjectStep,
         }
+      }
       case 'user/message':
         if (!isInjectedMessage(event)) return state
-        // This injected message will itself be followed by its step/end, so
-        // resetting sinceInject here makes that step the new counting origin.
-        return { totalSteps: state.totalSteps, lastInjectSeq: event.seq, sinceInject: 0 }
+        // The injected message is followed by its own step/end; anchoring the
+        // origin on the steps completed so far makes that step the first of
+        // the next interval.
+        return {
+          totalSteps: state.totalSteps,
+          lastInjectSeq: event.seq,
+          lastInjectStep: state.totalSteps,
+          sinceInject: 0,
+        }
       default:
         return state
     }
@@ -208,19 +229,15 @@ export function apply(ctx, config) {
     try {
       const session = agent.session
       const state = readProjectionState(session)
-      if (state.lastInjectSeq < 0) {
-        // No injection has happened in this session yet.
-        if (hasStart) {
-          // Conversation-start prompt rides the very first model call.
-          text = cfg.startPrompt
-        } else if (hasPeriodic && state.totalSteps + 1 >= cfg.interval) {
-          // Start disabled/empty: the first periodic call is the
-          // `interval`-th model call of the session.
-          text = cfg.prompt
-        }
+      if (state.lastInjectSeq < 0 && hasStart) {
+        // Conversation-start prompt rides the very first model call.
+        text = cfg.startPrompt
       } else if (hasPeriodic && state.sinceInject >= cfg.interval) {
-        // Periodic: the next model call is exactly `interval` completed
-        // steps after the previous injection.
+        // Periodic: this call is exactly `interval` completed steps after the
+        // previous injection — or, before any injection has happened, the
+        // `interval`-th call of the session. `sinceInject` advances on every
+        // `step/end` from the session's first step, so the same test covers
+        // both cases and the schedule can never stall.
         text = cfg.prompt
       }
     } catch (error) {

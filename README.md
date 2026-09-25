@@ -120,6 +120,19 @@ Related upstream DSH issue (chat composer): clicking the Send button while compo
 
 ## Changelog
 
+- **0.1.27** — **Periodic injection never fired on schedule.** The "steps since
+  the last injection" counter only advanced *after* a first injection had
+  happened (the first injection anchored the count), so before that point it
+  stayed at zero forever and the very first periodic prompt could only fire via
+  a separate fallback test — which then drifted. In a real session at
+  `interval: 50` with 497 model calls the plugin injected **once**, at call 443.
+  The schedule is now anchored on a step count (`lastInjectStep`, `-1` before
+  the first injection) and advances on every completed step from the session's
+  first call, so one arithmetic covers both the first and every later
+  injection: no start prompt ⇒ calls 50, 100, 150, …; with a start prompt ⇒ 1,
+  51, 101, …. Projection `stateVersion` is bumped to 3; a stale checkpoint row
+  is ignored and the fold recomputes from the log, so existing sessions keep
+  their injection bookmark and do not re-inject.
 - **0.1.26** — two fixes. (1) **Injection crashed** with "failed format v4
   message requires a producer-owned source kind": injected messages carried the
   retired `{ kind: 'plugin', plugin: 'round-inject' }` wrapper, which the session
